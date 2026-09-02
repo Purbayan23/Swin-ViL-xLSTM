@@ -1,5 +1,5 @@
 project_name: "Project_ViL"
-project_status: "pure_unet_baseline_implemented_cpu_sanity_passed_colab_dataset_cache_configured"
+project_status: "pure_unet_baseline_colab_gpu_sanity_passed_full_training_not_run"
 implementation_status: "pure_unet_implemented_cpu_sanity_passed_full_training_not_run"
 research_question: "How does Vision-LSTM-based feature processing compare with CNN and Swin Transformer feature processing within a lightweight U-Net framework for 2D medical-image segmentation?"
 primary_dataset:
@@ -13,6 +13,19 @@ computational_scope:
   initial_scope: "lightweight 2D experiments"
   three_dimensional_experiments: "deferred"
   full_paper_scale_reproduction: "deferred"
+runtime_verification:
+  local:
+    python: "3.12.13"
+    pytorch: "2.6.0+cpu"
+    backend: "CPU"
+    sanity_status: "passed"
+  colab:
+    python: "3.13.15"
+    pytorch: "2.11.0+cu128"
+    cuda: "12.8"
+    gpu: "NVIDIA Tesla T4"
+    gpu_memory: "15.6 GB"
+    sanity_status: "passed"
 reference_repositories:
   - id: "REF-REPO-01"
     name: "Swin-Unet"
@@ -79,7 +92,7 @@ implementation_artifacts:
   dataset: "src/data/kvasir_seg.py"
   manifest: "data/splits/kvasir_seg_seed42_70_15_15.json"
   full_training_status: "not_run"
-  runtime_sanity_status: "passed_cpu; colab_gpu_not_run"
+  runtime_sanity_status: "passed_cpu; passed_colab_gpu_tesla_t4"
 baseline_mask_preprocessing:
   grayscale: true
   threshold: 128

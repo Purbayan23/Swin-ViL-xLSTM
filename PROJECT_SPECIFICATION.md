@@ -2,7 +2,7 @@
 
 ## Status
 
-This document records the project contract and its implementation status. The first Pure U-Net baseline is implemented; the full 100-epoch experiment has not been run.
+This document records the project contract and its implementation status. The first Pure U-Net baseline is implemented, the bounded local CPU and Colab GPU sanity tests have passed, and the full 100-epoch experiment has not been run.
 
 ## Purpose
 
@@ -52,7 +52,11 @@ The project will use a common data and training protocol where practical, docume
 - Configuration: `configs/baseline_pure_unet.json`
 - Sanity configuration: `configs/sanity_pure_unet.json`
 - Mask preprocessing: grayscale, `gray >= 128`, binary conversion, then nearest-neighbor resize; 128 is an engineering choice, not an official dataset threshold.
-- Full training: not run; PyTorch is missing from the inspected runtime.
+- Local development runtime: Python 3.12.13 with PyTorch 2.6.0+cpu; bounded CPU sanity test passed.
+- Colab experiment runtime: Python 3.13.15 with PyTorch 2.11.0+cu128 and CUDA 12.8 on an NVIDIA Tesla T4 with 15.6 GB GPU memory; bounded CUDA sanity test passed.
+- Full 100-epoch training: not run.
+
+Local CPU debugging and Colab GPU experimentation remain separate execution environments. The approved baseline is ready for the first full run in Colab.
 
 ## Open specification items
 

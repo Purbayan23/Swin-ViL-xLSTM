@@ -6,10 +6,10 @@ Google Drive is persistent storage. `/content` is temporary session-local storag
 
 ## Fresh runtime
 
-Replace `YOUR_GITHUB_REPOSITORY_URL` with the repository's actual GitHub URL.
+The repository is `https://github.com/Purbayan23/Swin-ViL-xLSTM`.
 
 ```python
-!git clone YOUR_GITHUB_REPOSITORY_URL /content/Project_ViL
+!git clone https://github.com/Purbayan23/Swin-ViL-xLSTM /content/Project_ViL
 %cd /content/Project_ViL
 
 from google.colab import drive
@@ -28,6 +28,8 @@ Run the full baseline only after the sanity command passes:
 ```
 
 The sanity command is bounded to two batches. It does not run the 100-epoch experiment.
+
+The bounded CUDA sanity test has passed on an NVIDIA Tesla T4. Rerun it in each fresh Colab runtime to verify the active environment before training.
 
 If `/content/kvasir-seg` already exists, the preparation command refuses to silently reuse or replace it. Use `--reuse` only after accepting the verified local copy, or use `--replace` to explicitly rebuild the session-local copy.
 

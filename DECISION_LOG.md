@@ -112,4 +112,12 @@ Dates use the project date available during initialization: 2026-08-24. These en
 - Decision: Implement only the configuration-driven Pure U-Net baseline and bounded sanity-test entry point; do not run the full 100-epoch experiment in this pass.
 - Rationale: Validate the common data, loss, metric, optimizer, scheduler, and checkpoint pipeline before adding ViL or Swin.
 - Evidence: `BASELINE_SPECIFICATION_V1.md` and the first-baseline implementation files.
-- Status: Implemented; runtime sanity execution is blocked by missing PyTorch.
+- Status: Implemented; the initial runtime check was blocked before the approved PyTorch installation. Superseded by D-015 for current runtime status.
+
+## D-015 - Complete local and Colab runtime verification
+
+- Date: 2026-09-02
+- Decision: Record the approved local CPU runtime and the subsequent Colab GPU sanity verification as complete. Local PyTorch 2.6.0+cpu was installed and the bounded Pure U-Net sanity test passed. The Colab CUDA sanity test subsequently passed on an NVIDIA Tesla T4 using Python 3.13.15, PyTorch 2.11.0+cu128, CUDA 12.8, and 15.6 GB GPU memory.
+- Rationale: The data, model, optimization, checkpoint, and evaluation pipeline has now passed bounded verification in the intended local development and Colab GPU environments before the first full experiment.
+- Evidence: Local bounded CPU sanity-test output and the recorded Colab Tesla T4 CUDA sanity-test result.
+- Status: Complete for runtime verification; the full 100-epoch Pure U-Net experiment remains not run.
