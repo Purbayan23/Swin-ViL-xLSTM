@@ -4,7 +4,7 @@ This remains the cross-model planning protocol. The first Pure U-Net implementat
 
 The first Pure U-Net baseline is now complete. It used the frozen Kvasir-SEG split and approved 100-epoch protocol; the best validation-Dice checkpoint was epoch 40, with test Dice `0.8241105952570058` and test IoU `0.7412125480073589`. The complete result table and post-hoc qualitative analysis are recorded in `BASELINE_SPECIFICATION_V1.md`.
 
-The next controlled comparison is **Architecture A: Pure U-Net + ViL/mLSTM bottleneck**. It will keep the dataset, frozen split, preprocessing, metrics, and standardized training protocol unchanged unless a later decision explicitly records a change. The planned sequence-level transformation is `[B,C,H,W] -> [B,H*W,C] -> ViL/mLSTM feature block -> [B,H*W,C] -> [B,C,H,W]`; this is a future implementation, not part of the completed baseline.
+The next controlled comparison is **Architecture A: Pure U-Net + ViL/mLSTM bottleneck**. Its project-local implementation has passed bounded CPU sanity validation, but its full 100-epoch run remains pending. It will keep the dataset, frozen split, preprocessing, metrics, and standardized training protocol unchanged unless a later decision explicitly records a change. The implemented sequence-level transformation is `[B,C,H,W] -> [B,H*W,C] -> ViL/mLSTM feature block -> [B,H*W,C] -> [B,C,H,W]`; it is not part of the completed baseline result.
 
 ## Data
 
@@ -22,7 +22,7 @@ The next controlled comparison is **Architecture A: Pure U-Net + ViL/mLSTM bottl
 ## Initial model sequence
 
 1. Pure CNN U-Net (completed).
-2. CNN U-Net with a custom sequence-level ViL/mLSTM bottleneck (next experiment).
+2. CNN U-Net with a custom sequence-level ViL/mLSTM bottleneck (implemented; full run pending).
 3. CNN U-Net with ViL at selected deeper encoder stages.
 4. Lightweight Swin comparison using the common experimental scaffold where possible.
 5. Optional hierarchical ViL extension.

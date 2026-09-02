@@ -12,6 +12,8 @@ The baseline uses 1,000 verified Kvasir-SEG image/mask pairs with a deterministi
 
 The local laptop/Codex environment is used for CPU development and debugging, while Google Colab is used for GPU experiments. The reproducible qualitative post-hoc workflow is provided by `scripts/visualize_predictions.py`; it creates a deterministic eight-image fixed-sample grid and a separate grid of the four lowest-Dice test cases without changing training or checkpoint selection. The difficult cases showed localization errors, false-positive over-segmentation, near-complete misses, and incomplete capture of larger targets. These are baseline observations, not claims that a future ViL model will solve them.
 
+Architecture A, `Pure U-Net + ViL/mLSTM bottleneck`, is implemented as a project-local sequence-level bottleneck adapted from the xLSTM-UNet feature-processing pattern. It has passed the bounded CPU sanity test and focused unit tests, but its full 100-epoch experiment has not been run.
+
 ## Reference structure
 
 - `Reference/Papers/` - source PDFs
@@ -25,7 +27,7 @@ The local laptop/Codex environment is used for CPU development and debugging, wh
 ## Planned progression
 
 1. Pure CNN U-Net baseline (completed and frozen)
-2. Architecture A: Pure U-Net + ViL/mLSTM bottleneck (next controlled experiment)
+2. Architecture A: Pure U-Net + ViL/mLSTM bottleneck (implemented; full run pending)
 3. U-Net with ViL at selected deeper encoder stages
 4. Lightweight Swin comparison
 5. Optional hierarchical ViL extension

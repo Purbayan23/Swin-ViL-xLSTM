@@ -1,6 +1,6 @@
 project_name: "Project_ViL"
-project_status: "pure_unet_baseline_completed_next_vil_mlstm_bottleneck"
-implementation_status: "pure_unet_baseline_completed"
+project_status: "pure_unet_baseline_completed_architecture_a_sanity_passed"
+implementation_status: "pure_unet_baseline_and_architecture_a_implemented"
 research_question: "How does Vision-LSTM-based feature processing compare with CNN and Swin Transformer feature processing within a lightweight U-Net framework for 2D medical-image segmentation?"
 primary_dataset:
   name: "Kvasir-SEG"
@@ -40,6 +40,28 @@ baseline_experiment:
     difficult_case_selection: "four lowest-Dice cases from the 150-image test set"
     artifacts: "experiments/runs/baseline_pure_unet_seed42/visualizations/"
   next_experiment: "Architecture A: Pure U-Net + ViL/mLSTM bottleneck"
+architecture_a:
+  name: "Architecture A: Pure U-Net + ViL/mLSTM bottleneck"
+  status: "implemented_bounded_cpu_sanity_passed_full_training_not_run"
+  model_config: "configs/vil_bottleneck.json"
+  sanity_config: "configs/sanity_vil_bottleneck.json"
+  colab_config: "configs/colab_vil_bottleneck.json"
+  colab_sanity_config: "configs/colab_sanity_vil_bottleneck.json"
+  tensor_flow: "[B,256,14,14] -> [B,196,256] -> ViL/mLSTM -> [B,196,256] -> [B,256,14,14]"
+  sequence_order: "row-major, top-left to bottom-right"
+  sequence_length: 196
+  embedding_dimension: 256
+  additional_projection_dimension: null
+  block_depth: 1
+  internal_expansion: 2
+  internal_dimension: 512
+  mLSTM_heads: 128
+  mLSTM_head_dimension: 4
+  parameters: 5611617
+  parameter_increase_over_pure_unet: 796672
+  additional_dependencies: "none; native PyTorch implementation"
+  reference_pattern: "xLSTM-UNet UxLSTMBot_2d.py and vision_lstm.py"
+  full_training_status: "not_run"
 computational_scope:
   target: "basic laptop and Google Colab"
   initial_scope: "lightweight 2D experiments"
@@ -108,7 +130,7 @@ notebook:
   status: "static_reference_not_executed"
 planned_experiments:
   - "Pure CNN U-Net baseline (completed and frozen)"
-  - "Architecture A: Pure U-Net + ViL/mLSTM bottleneck (next)"
+  - "Architecture A: Pure U-Net + ViL/mLSTM bottleneck (implemented; full run pending)"
   - "U-Net with ViL at selected deeper encoder stages"
   - "Lightweight Swin comparison"
   - "Optional hierarchical ViL extension"
@@ -123,6 +145,8 @@ implementation_artifacts:
   visualization: "scripts/visualize_predictions.py"
   visualization_outputs: "experiments/runs/baseline_pure_unet_seed42/visualizations/ (gitignored)"
   model: "src/models/pure_unet.py"
+  architecture_a_model: "src/models/vil_bottleneck_unet.py"
+  model_factory: "src/models/factory.py"
   dataset: "src/data/kvasir_seg.py"
   manifest: "data/splits/kvasir_seg_seed42_70_15_15.json"
   full_training_status: "completed_100_epochs"
@@ -136,6 +160,6 @@ baseline_mask_preprocessing:
 unresolved_decisions:
   - "Exact Kvasir-SEG release/version identifier: TBD"
   - "Aspect-ratio-preserving preprocessing: future controlled experiment"
-  - "Exact ViL implementation/configuration: TBD"
+  - "Exact ViL implementation/configuration for later variants: TBD; Architecture A uses the documented project-local xLSTM-UNet-pattern block"
   - "Exact lightweight Swin configuration: TBD"
   - "Pretrained-weight experiment design: TBD; first controlled comparison is from scratch"

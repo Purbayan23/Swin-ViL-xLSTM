@@ -1,10 +1,12 @@
 # Architecture Specification V1
 
-Status: architecture specification only. No model implementation is included.
+Status: architecture specification and implementation record. The Pure U-Net baseline is complete; Architecture A is implemented and has passed bounded CPU sanity validation. Architecture A has not been fully trained.
 
-Date: 2026-08-24
+Date: 2026-09-03
 
 This document converts the current project protocol and the inspected reference source trees into a tensor-level implementation target. It deliberately separates source-backed facts from engineering recommendations and unresolved decisions.
+
+The Pure U-Net choices for the first experiment are frozen in `BASELINE_SPECIFICATION_V1.md`. Architecture A changes only the bottleneck feature-processing mechanism; its encoder, decoder, skips, data contract, loss, optimizer, scheduler, and run protocol remain shared with the baseline.
 
 All files under `Reference/` remain immutable. The relevant source trees inspected were:
 
@@ -49,13 +51,13 @@ H and W are fixed within a run.
 H and W must be divisible by every planned downsampling factor.
 ```
 
-The existing protocol recommends starting at `224x224`, but the final resolution is not frozen.
+The first baseline and Architecture A use the frozen `224x224` resolution. Alternate resolutions or aspect-ratio-preserving preprocessing remain separate future experiments.
 
 Classification:
 
 - Fixed-size processing within a run: **STRONGLY SUPPORTED INFERENCE**.
-- Starting at `224x224`: **ENGINEERING CHOICE** supported by the existing protocol.
-- Final image resolution and aspect-ratio policy: **TBD**.
+- Starting at `224x224`: **ENGINEERING CHOICE** frozen in the baseline protocol.
+- Alternate image resolution and aspect-ratio policy: **TBD** for future experiments.
 
 ## 1.3 Target and output tensors
 
@@ -69,7 +71,7 @@ The target mask represents background/foreground using values `{0, 1}`. The outp
 Classification:
 
 - Shape and binary-mask contract: **DIRECT SOURCE SUPPORT** from `EXPERIMENT_PROTOCOL.md`.
-- Target tensor dtype: **TBD**; it depends on the final loss choice.
+- Target tensor dtype: **ENGINEERING CHOICE**; the implemented baseline uses float32 binary masks for BCE plus soft Dice.
 - Sigmoid application: **STRONGLY SUPPORTED INFERENCE** that sigmoid should be applied for probability/thresholding outside the model, because the protocol specifies logits.
 
 ## 1.4 Sequence convention
@@ -120,7 +122,7 @@ Classification:
 
 - Spatially aligned skip tensors: **STRONGLY SUPPORTED INFERENCE** from U-Net structure and the inspected xLSTM-UNet decoder.
 - Saving the processed tensor after the stage processor: **ENGINEERING CHOICE**.
-- Exact fusion operation and decoder channels: **TBD**.
+- Exact fusion operation and decoder channels: **ENGINEERING CHOICE** frozen by the implemented baseline and reused by Architecture A.
 
 # 2. Pure U-Net baseline
 
@@ -130,9 +132,9 @@ No standalone project CNN U-Net implementation is present in `Reference/`. The x
 
 Therefore, the pure U-Net architecture below is a project design target, not a directly copied reference implementation.
 
-Classification: **DIRECT SOURCE SUPPORT** that the pure U-Net must be the first model; the exact pure U-Net definition is **TBD**.
+Classification: **DIRECT SOURCE SUPPORT** that the pure U-Net must be the first model; its implemented details are **ENGINEERING CHOICES** recorded in `BASELINE_SPECIFICATION_V1.md`.
 
-## 2.2 Provisional V1 tensor ladder
+## 2.2 Implemented V1 tensor ladder
 
 For the existing protocol's provisional `224x224` starting resolution, the following is a candidate lightweight ladder:
 
@@ -155,18 +157,18 @@ The corresponding flattened sequence lengths would be:
 14x14   = 196
 ```
 
-This is a provisional target to make later tensor contracts concrete. It is not yet the final project configuration.
+This is the implemented and frozen first-baseline ladder. Architecture A reuses it unchanged.
 
 Classification:
 
 - Four encoder stages plus one bottleneck: **ENGINEERING CHOICE**.
 - Candidate widths `[32, 64, 128, 256, 256]`: **ENGINEERING CHOICE**.
 - Resolution ladder at `224x224`: **ENGINEERING CHOICE** based on the existing protocol recommendation.
-- Final number of stages, widths, and input resolution: **TBD**.
+- Final number of stages, widths, and input resolution for V1: **ENGINEERING CHOICE** implemented and frozen; later scale variants remain open.
 
 ## 2.3 Encoder blocks
 
-Candidate encoder stage:
+Implemented encoder stage:
 
 ```text
 input feature
@@ -182,11 +184,9 @@ Potential source-aligned CNN choices include the residual blocks, InstanceNorm, 
 Classification:
 
 - Convolutional feature extraction: **DIRECT SOURCE SUPPORT** only at the broad U-Net level.
-- Two `3x3` convolutions per stage: **ENGINEERING CHOICE**, not frozen.
-- Residual versus plain convolution block: **TBD**.
-- Normalization: **TBD**.
-- Activation: **TBD**.
-- Exact downsampling operator: **TBD**; candidates are max pooling or stride-2 convolution.
+- Two `3x3` convolutions per stage: **ENGINEERING CHOICE** frozen in the baseline.
+- Plain convolution block, InstanceNorm, and LeakyReLU: **ENGINEERING CHOICE** frozen in the baseline.
+- MaxPool downsampling: **ENGINEERING CHOICE** frozen in the baseline.
 
 ## 2.4 Bottleneck
 
@@ -206,11 +206,11 @@ Classification:
 
 - Shape-preserving bottleneck: **STRONGLY SUPPORTED INFERENCE**.
 - Candidate `C_b=256`: **ENGINEERING CHOICE**.
-- Number and type of bottleneck blocks: **TBD**.
+- Number and type of Pure U-Net CNN bottleneck blocks: **ENGINEERING CHOICE** frozen in the baseline; Architecture A adds the separate ViL/mLSTM processor after this CNN block.
 
 ## 2.5 Decoder
 
-Candidate decoder contract:
+Implemented decoder contract:
 
 ```text
 upsample to the next skip resolution
@@ -224,9 +224,8 @@ The decoder must reverse the encoder spatial ladder and produce `[B, C_0, H, W]`
 Classification:
 
 - U-Net-style mirrored decoder and skip fusion: **DIRECT SOURCE SUPPORT** at the architectural level.
-- Nearest-neighbor plus `1x1` projection: **DIRECT SOURCE SUPPORT** for xLSTM-UNet, but not a project decision.
-- Transposed convolution: **DIRECT SOURCE SUPPORT** as a Swin-Unet paper alternative, but not a project decision.
-- Decoder upsampling method, block count, normalization, activation, and fusion order: **TBD**.
+- Bilinear interpolation plus `1x1` projection: **ENGINEERING CHOICE** frozen in the baseline.
+- The decoder uses the same two-convolution InstanceNorm/LeakyReLU blocks and concatenated skips as the Pure U-Net baseline.
 
 ## 2.6 Segmentation head
 
@@ -242,13 +241,13 @@ Classification:
 
 - `1x1` class projection is directly used by Swin-Unet: **DIRECT SOURCE SUPPORT**.
 - One foreground logit for the binary contract: **ENGINEERING CHOICE** supported by `EXPERIMENT_PROTOCOL.md`.
-- Bias use and probability activation inside/outside the model: **TBD** except that the protocol output is logits.
+- The implemented head uses a one-channel `1x1` convolution with raw logits; sigmoid is applied only for loss/metrics: **ENGINEERING CHOICE** frozen in the baseline.
 
 # 3. ViL bottleneck
 
 ## 3.1 Selected ViL implementation
 
-The first ViL bottleneck should use the custom sequence-level implementation pattern in:
+Architecture A uses the custom sequence-level implementation pattern in:
 
 ```text
 Reference/repositories/xLSTM-UNet-PyTorch-main/
@@ -262,20 +261,22 @@ Reference/repositories/xLSTM-UNet-PyTorch-main/
 UxLSTM/nnunetv2/nets/vision_lstm.py
 ```
 
-It is not the complete official `VisionLSTM2` class.
+It is not the complete official `VisionLSTM2` class. The project-local implementation is `src/models/vil_bottleneck_unet.py` and does not import the reference repositories.
 
-Classification: **DIRECT SOURCE SUPPORT** and an established project decision.
+Classification: **DIRECT SOURCE SUPPORT** for the integration pattern; the project-local PyTorch port is an **ENGINEERING CHOICE**.
 
 ## 3.2 Exact tensor transformation
 
-For bottleneck feature `F_b`:
+At the implemented Pure U-Net bottleneck, `F_b` is `[B,256,14,14]`, so `H_b*W_b=196` and the token embedding dimension is `C_b=256`:
 
 ```text
-F_b                    [B, C_b, H_b, W_b]
-reshape/transpose      [B, H_b*W_b, C_b]
-custom ViLBlock        [B, H_b*W_b, C_b]
-transpose/reshape      [B, C_b, H_b, W_b]
+F_b                    [B, 256, 14, 14]
+flatten spatial order  [B, 196, 256]
+ViL/mLSTM block        [B, 196, 256]
+restore spatial order  [B, 256, 14, 14]
 ```
+
+The flattening is row-major: for each batch item, height rows are traversed from top to bottom and columns within each row from left to right. The inverse transpose/reshape restores the same coordinate mapping.
 
 The inspected xLSTM-UNet `ViLLayer` asserts that the channel dimension equals its configured `dim`. Therefore the first version should use:
 
@@ -301,7 +302,7 @@ Those projections are not part of the first recommended design.
 Classification:
 
 - Shape-preserving flatten/ViL/restore path: **DIRECT SOURCE SUPPORT**.
-- `D=C_b` and no projections: **STRONGLY SUPPORTED INFERENCE** and recommended engineering choice.
+- `D=C_b` at the external block interface and no external projections: **STRONGLY SUPPORTED INFERENCE** and implemented engineering choice.
 
 ## 3.3 Normalization and residual structure
 
@@ -317,9 +318,9 @@ The custom `ViLLayer` itself contains the mLSTM projections, causal 1D convoluti
 
 The xLSTM-UNet wrapper also defines a `self.norm`, but its forward method calls `self.vil` directly; the effective normalization for this path is the LayerNorm inside `ViLBlock`.
 
-The first project adapter should not add another external residual or normalization layer around the custom block unless that becomes a documented ablation.
+The project adapter uses one pre-normalized residual ViL/mLSTM block. Its residual is the direct `x + block(LayerNorm(x))` path corresponding to the reference `DropPath` with `drop_path=0`. The mLSTM branch also retains the reference learnable skip before output gating. No additional external residual or normalization layer is added.
 
-Classification: **DIRECT SOURCE SUPPORT** for the inspected custom block; external normalization/residual additions are **TBD** and should be avoided initially.
+Classification: **DIRECT SOURCE SUPPORT** for the inspected custom block; deterministic residual/no-drop-path behavior is an **ENGINEERING CHOICE** matching the reference default.
 
 ## 3.4 Sequence ordering
 
@@ -342,10 +343,10 @@ Classification:
 
 The custom xLSTM-UNet bottleneck path does not call the official `VitPatchEmbed` or `VitPosEmbed2d` path. It receives an already spatially embedded CNN feature map and only changes its representation to a sequence.
 
-For the first bottleneck:
+For the first bottleneck, the implementation:
 
-- patch embedding inside ViL: avoid;
-- additional VisionLSTM2 positional embedding: avoid;
+- avoids patch embedding inside ViL;
+- avoids additional VisionLSTM2 positional embedding;
 - preserve the CNN feature-map coordinate order through the flatten/restore operation.
 
 This avoids a second tokenization/downsampling mechanism and keeps the experiment focused on feature processing.
@@ -368,6 +369,30 @@ Required invariants:
 - no pooling;
 - no patch-size reduction;
 - no decoder interface change.
+
+## 3.7 Architecture A implementation record
+
+The implemented block uses one custom ViL/mLSTM block with the following configuration:
+
+| Component | Configuration |
+|---|---|
+| External input/output | `[B,256,14,14]` |
+| Sequence length | `196` |
+| External embedding dimension | `256` |
+| Block depth | `1` |
+| Internal expansion | `2`, giving inner dimension `512` |
+| mLSTM head block size | `4`, giving `128` heads of dimension `4` |
+| Local context convolution | causal depthwise 1-D convolution, kernel size `4` |
+| Traversal | one top-left-to-bottom-right row-major sequence |
+| Normalization | residual-weight LayerNorm before the block; per-head output normalization |
+| Projection biases | disabled for ViL projections, as in the adapted reference defaults |
+| Convolution bias | enabled for the causal depthwise convolution |
+| Stochastic depth | disabled |
+| Positional/patch embedding | none |
+
+The parallel matrix-memory computation follows the stabilized mLSTM equations in the inspected xLSTM-UNet `vision_lstm.py`. Native PyTorch reshaping, `einsum`, grouped convolution, and normalization replace the reference `einops` and framework-specific imports.
+
+Architecture A passed the bounded CPU sanity path and focused unit tests. It has not been trained for the full 100-epoch experiment.
 
 # 4. Multi-stage ViL
 
@@ -533,7 +558,7 @@ Classification:
 
 # 6. Model-scale options
 
-The following are provisional project scale envelopes, not official named model variants. Parameter counts for the complete project models are TBD because the pure U-Net blocks, decoder, projections, and final ViL placement have not been implemented or measured.
+The following remain provisional project scale envelopes, not official named model variants. The completed Pure U-Net and implemented Architecture A parameter counts are recorded below; future scale variants and multi-stage placements remain unimplemented.
 
 All rows use the provisional spatial ladder in Section 2.
 
@@ -571,6 +596,15 @@ For each complete implemented model, measure rather than infer:
 - inference time per image.
 
 No benchmark memory number is asserted in this specification.
+
+## 6.3 Implemented parameter counts
+
+| Model | Trainable parameters | Difference from Pure U-Net |
+|---|---:|---:|
+| Pure U-Net | `4,814,945` | — |
+| Architecture A: Pure U-Net + one ViL/mLSTM bottleneck block | `5,611,617` | `+796,672` |
+
+The increase is entirely attributable to the project-local bottleneck block. No parameter matching was imposed. The Architecture A sanity configuration uses batch size 1 only as a bounded diagnostic; the full experiment configuration preserves the approved batch size 4.
 
 # 7. Fair comparison
 
@@ -656,7 +690,7 @@ Decoder:        restore 28, 56, 112, 224 resolutions with matching skips
 Output:         [B, 1, 224, 224] logits
 ```
 
-This recommendation is:
+This recommendation was implemented and validated as the completed Pure U-Net baseline. It is:
 
 - technically valid;
 - the easiest model to debug;
@@ -664,7 +698,7 @@ This recommendation is:
 - independent of ViL and Swin-specific compatibility issues;
 - required for validating the data, loss, metrics, checkpointing, and evaluation pipeline.
 
-The following details remain open even for this first model:
+The following details were subsequently frozen in `BASELINE_SPECIFICATION_V1.md`:
 
 - exact convolution block definition;
 - normalization;
@@ -675,9 +709,9 @@ The following details remain open even for this first model:
 - exact input resize/aspect-ratio policy;
 - loss and optimizer.
 
-Therefore this is the recommended **architecture target**, not authorization to implement before those TBD items are resolved.
+Architecture A is now the implemented next comparison target; only its bounded sanity checks have been run, not the full 100-epoch experiment.
 
-Classification: **DIRECT SOURCE SUPPORT** for the first-model ordering; the concrete Tiny ladder is an **ENGINEERING CHOICE**; unresolved layer details are **TBD**.
+Classification: **DIRECT SOURCE SUPPORT** for the first-model ordering; the concrete Pure U-Net and Architecture A project choices are **ENGINEERING CHOICES** recorded in the baseline and implementation configurations.
 
 # 9. Implementation dependencies
 
@@ -714,7 +748,7 @@ The reference source trees indicate future implementation will require some comb
 - a YAML/configuration mechanism if the Swin configuration style is used;
 - optional nnU-Net, dynamic-network-architectures, MONAI, and related packages only if the project adopts the xLSTM-UNet framework.
 
-The current environment has no importable PyTorch or torchvision. No compatibility fix or package installation is part of this pass.
+The current local environment has importable PyTorch `2.6.0+cpu`, NumPy, and Pillow. Architecture A uses only native PyTorch operations and therefore does not require `einops`, torchvision, nnU-Net, dynamic-network-architectures, or another compiled extension. No package installation was required for this implementation pass.
 
 ## 9.4 Compatibility issues
 
@@ -728,33 +762,26 @@ The current environment has no importable PyTorch or torchvision. No compatibili
 
 ## Data and spatial contract
 
-- What exact Kvasir-SEG version will be used?
-- What exact train/validation/test split will be frozen?
-- Will images be directly resized or aspect-ratio padded?
-- Is the final size `224x224`, `256x256`, or another value?
-- What target dtype and binary loss will be used?
+- The first baseline uses the frozen seed-42 `70/15/15` split and direct `224x224` preprocessing documented in `BASELINE_SPECIFICATION_V1.md`.
+- The exact Kvasir-SEG release/version identifier remains TBD for provenance.
+- Aspect-ratio-preserving preprocessing, alternate resolutions, and target/loss variants are future controlled experiments.
 
 Evidence needed: a documented dataset/split decision and a data-contract review. No dataset download is required for this specification pass.
 
 ## Pure U-Net
 
-- Should the baseline use plain convolution blocks or residual blocks?
-- How many convolution layers per stage?
-- InstanceNorm, BatchNorm, GroupNorm, or another normalization?
-- LeakyReLU, ReLU, or another activation?
-- Max pooling, stride-2 convolution, or another downsampling method?
-- Nearest upsampling, transposed convolution, or another decoder method?
-- Are the candidate widths appropriate for the available hardware?
+- The first baseline uses the plain two-convolution Conv–InstanceNorm–LeakyReLU blocks, MaxPool downsampling, bilinear-plus-`1x1` decoder, and `32-64-128-256-256` widths documented in `BASELINE_SPECIFICATION_V1.md`.
+- Alternate blocks, widths, decoder operators, and resolutions are separate future experiments.
 
 Evidence needed: a project design decision; no reference implementation fixes these choices.
 
 ## ViL
 
-- Is the first ViL experiment definitively the custom xLSTM-UNet block?
-- Should one or more custom ViL blocks be stacked at the bottleneck?
-- Should stochastic depth remain disabled initially?
-- Should all ViL processing use float32, or should the later implementation preserve mixed precision where valid?
-- Should any positional encoding be added as an ablation?
+- The first ViL implementation is resolved as the custom xLSTM-UNet block adapted into project-local native PyTorch code; future alternative blocks remain open.
+- Architecture A uses one custom ViL/mLSTM block at the bottleneck; stacking is a future experiment.
+- Stochastic depth is disabled for Architecture A; later regularization remains open.
+- The current adapter promotes float16/bfloat16 inputs to float32 for numerical stability; a later mixed-precision design remains open.
+- Positional encoding is omitted from Architecture A; adding it is a separate ablation.
 - Should official VisionLSTM2 be evaluated only as a separate model family?
 
 Evidence needed: source-level adapter design and later forward-shape/compatibility tests.
@@ -794,21 +821,25 @@ Evidence needed: later model construction and measurement; no benchmark numbers 
 | Binary mask `[B,1,H,W]` | DIRECT SOURCE SUPPORT | Existing experiment protocol |
 | Logit output `[B,1,H,W]` | DIRECT SOURCE SUPPORT | Existing experiment protocol |
 | Fixed spatial size per run | STRONGLY SUPPORTED INFERENCE | Fixed-grid behavior of reference models |
-| Starting resolution `224x224` | ENGINEERING CHOICE | Existing protocol recommendation, not frozen |
+| Starting resolution `224x224` | ENGINEERING CHOICE | Frozen first-baseline configuration |
 | Four-stage pure U-Net ladder | ENGINEERING CHOICE | No project CNN implementation fixes it |
 | Pure U-Net widths `[32,64,128,256,256]` | ENGINEERING CHOICE | Lightweight provisional target |
-| Pure U-Net normalization/activation | TBD | No project decision or standalone source baseline |
+| Pure U-Net normalization/activation | ENGINEERING CHOICE | Frozen in `BASELINE_SPECIFICATION_V1.md` |
 | NCHW to `[B,H*W,C]` flatten/restore | DIRECT SOURCE SUPPORT | xLSTM-UNet `ViLLayer` |
 | Custom sequence-level ViL for first experiment | DIRECT SOURCE SUPPORT | Existing decision and xLSTM-UNet source |
 | ViL dimension equals stage channels | STRONGLY SUPPORTED INFERENCE | xLSTM-UNet asserts channel/dim equality |
 | Top-left traversal for first bottleneck | DIRECT SOURCE SUPPORT | xLSTM-UNet bottleneck wrapper |
+| One top-left-to-bottom-right block for Architecture A | ENGINEERING CHOICE | Matches the xLSTM-UNet bottleneck wrapper |
+| Internal expansion `2`, qkv block size `4`, kernel size `4` | ENGINEERING CHOICE | Adapted reference defaults |
+| ViL residual and mLSTM learnable skip | ENGINEERING CHOICE | Adapted from xLSTM-UNet `ViLBlock` and `ViLLayer` |
 | Avoid patch embedding inside first ViL block | STRONGLY SUPPORTED INFERENCE | Avoids second tokenization and matches custom wrapper |
+| No additional positional encoding | STRONGLY SUPPORTED INFERENCE | Custom xLSTM-UNet bottleneck receives CNN features |
 | ViL after CNN stage/downsampling | STRONGLY SUPPORTED INFERENCE | xLSTM-UNet encoder execution order |
 | Stage 2 plus bottleneck first multi-stage candidate | ENGINEERING CHOICE | Proposed resource-conscious progression |
 | Native Swin-Unet resolution ladder | DIRECT SOURCE SUPPORT | Local Swin source/configuration |
 | Common-scaffold Swin comparator | ENGINEERING CHOICE | Required for cleaner control, not original code |
 | First model is Pure U-Net | DIRECT SOURCE SUPPORT | Decision log and frozen protocol |
 | First controlled comparison from scratch | DIRECT SOURCE SUPPORT | Experiment protocol |
-| Final hyperparameters and measurement budget | TBD | No project decision yet |
+| First-baseline hyperparameters and measurement budget | ENGINEERING CHOICE | Frozen in `BASELINE_SPECIFICATION_V1.md`; future changes require a new decision |
 
 No novelty, superiority, or efficiency claim is made by this specification.

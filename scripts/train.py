@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data.kvasir_seg import KvasirSegDataset
 from src.losses.segmentation import BCESoftDiceLoss
-from src.models.pure_unet import PureUNet
+from src.models.factory import build_model
 from src.training.checkpoint import save_checkpoint
 from src.training.config import choose_device, load_config, project_path
 from src.training.engine import evaluate, train_one_epoch
@@ -66,7 +66,7 @@ def main() -> int:
     dataset_config = config["dataset"]
     train_loader = build_loader(config, "train", shuffle=True)
     validation_loader = build_loader(config, "validation", shuffle=False)
-    model = PureUNet(**config["model"]).to(device)
+    model = build_model(config).to(device)
     criterion = BCESoftDiceLoss(**config["loss"])
     optimizer = torch.optim.AdamW(
         model.parameters(),

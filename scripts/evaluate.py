@@ -1,4 +1,4 @@
-"""Configuration-driven evaluation of the selected Pure U-Net checkpoint."""
+"""Configuration-driven evaluation of a configured segmentation checkpoint."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data.kvasir_seg import KvasirSegDataset
 from src.losses.segmentation import BCESoftDiceLoss
-from src.models.pure_unet import PureUNet
+from src.models.factory import build_model
 from src.training.checkpoint import load_checkpoint
 from src.training.config import choose_device, load_config, project_path
 from src.training.engine import evaluate
@@ -40,7 +40,7 @@ def main() -> int:
         mask_threshold=dataset_config["mask_threshold"],
     )
     loader = DataLoader(dataset, batch_size=int(config["training"]["batch_size"]), shuffle=False)
-    model = PureUNet(**config["model"]).to(device)
+    model = build_model(config).to(device)
     checkpoint = args.checkpoint or (
         project_path(config, config["training"]["checkpoint_dir"]) / "best.pt"
     )

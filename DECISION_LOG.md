@@ -130,3 +130,14 @@ Dates use the project date available when each entry was recorded. Initializatio
 - Evidence: Completed Colab baseline run; best validation Dice `0.828427411334084`; test Dice `0.8241105952570058`; test IoU `0.7412125480073589`; post-hoc fixed-sample and four-lowest-Dice qualitative analysis.
 - Controlled-comparison rule: Reuse the dataset, frozen seed-42 split, preprocessing, evaluation metrics, and standardized training protocol. Architecture A will use the planned sequence-level pattern `[B,C,H,W] -> [B,H*W,C] -> ViL/mLSTM feature block -> [B,H*W,C] -> [B,C,H,W]` and is not implemented by this decision entry.
 - Status: Baseline frozen; next experiment authorized as a separately implemented controlled comparison. The four lowest-Dice cases are post-hoc analysis only and are not representative random samples or tuning data.
+
+## D-017 - Implement Architecture A as the xLSTM-UNet-pattern bottleneck adapter
+
+- Date: 2026-09-03
+- Decision: Implement Architecture A as a project-local, sequence-level ViL/mLSTM bottleneck while changing no component of the frozen Pure U-Net pipeline outside the bottleneck feature processor.
+- Rationale: The xLSTM-UNet 2D bottleneck wrapper directly provides the required feature-map-to-sequence-to-feature-map integration. The complete official VisionLSTM2 model is not a drop-in block because it includes image patch embedding, positional embedding, and an alternating block-pair backbone.
+- Implementation: `[B,256,14,14] -> [B,196,256] -> one top-left-to-bottom-right ViL/mLSTM block -> [B,196,256] -> [B,256,14,14]`, with internal expansion 2, 128 heads of dimension 4, causal depthwise kernel size 4, residual path, and no patch or positional embedding.
+- Evidence: `ARCHITECTURE_SPECIFICATION_V1.md`; `Reference/repositories/xLSTM-UNet-PyTorch-main/UxLSTM/nnunetv2/nets/UxLSTMBot_2d.py`; `Reference/repositories/xLSTM-UNet-PyTorch-main/UxLSTM/nnunetv2/nets/vision_lstm.py`; cited Vision-LSTM and xLSTM-UNet papers; bounded CPU sanity and focused unit tests.
+- Parameter effect: Pure U-Net `4,814,945`; Architecture A `5,611,617`; increase `796,672`. The difference is recorded as an experimental factor and is not parameter-matched.
+- Dependencies: Native PyTorch implementation; no `einops`, torchvision, nnU-Net, dynamic-network-architectures, compiled extension, or package installation required.
+- Status: Implemented and bounded-sanity validated on CPU; CUDA path remains to be exercised in Colab; full Architecture A training has not been run.

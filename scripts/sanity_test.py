@@ -1,4 +1,4 @@
-"""Run a bounded end-to-end Pure U-Net integration sanity test."""
+"""Run a bounded end-to-end configured-model integration sanity test."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def main() -> int:
     from src.data.kvasir_seg import KvasirSegDataset
     from src.losses.segmentation import BCESoftDiceLoss
     from src.metrics.segmentation import batch_metric_values
-    from src.models.pure_unet import PureUNet
+    from src.models.factory import build_model
     from src.training.checkpoint import load_checkpoint, save_checkpoint
     from src.training.config import choose_device, load_config, project_path
     from src.utils.reproducibility import (
@@ -73,7 +73,7 @@ def main() -> int:
 
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-    model = PureUNet(**config["model"]).to(device)
+    model = build_model(config).to(device)
     criterion = BCESoftDiceLoss(**config["loss"])
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -105,6 +105,9 @@ def main() -> int:
         loss = criterion(logits, masks)
         assert torch.isfinite(loss).item()
         loss.backward()
+        for parameter in model.parameters():
+            if parameter.grad is not None:
+                assert torch.isfinite(parameter.grad).all().item()
         optimizer.step()
         metric_values = batch_metric_values(logits.detach(), masks, threshold=0.5)
         output_shape = list(logits.shape)
@@ -124,7 +127,7 @@ def main() -> int:
         config=config,
         seed=seed,
     )
-    restored = PureUNet(**config["model"]).to(device)
+    restored = build_model(config).to(device)
     load_checkpoint(checkpoint_path, restored, map_location=device)
     if device.type == "cuda":
         torch.cuda.synchronize(device)

@@ -47,6 +47,7 @@ class PureUNet(nn.Module):
         features: Sequence[int] = (32, 64, 128, 256, 256),
         negative_slope: float = 0.01,
         instance_norm_eps: float = 1e-5,
+        bottleneck_processor: nn.Module | None = None,
     ) -> None:
         super().__init__()
         features = tuple(int(value) for value in features)
@@ -76,6 +77,9 @@ class PureUNet(nn.Module):
             negative_slope=negative_slope,
             instance_norm_eps=instance_norm_eps,
         )
+        self.bottleneck_processor = (
+            bottleneck_processor if bottleneck_processor is not None else nn.Identity()
+        )
 
         self.up_projections = nn.ModuleList()
         self.decoders = nn.ModuleList()
@@ -103,7 +107,7 @@ class PureUNet(nn.Module):
             skips.append(x)
             x = self.pool(x)
 
-        x = self.bottleneck(x)
+        x = self.bottleneck_processor(self.bottleneck(x))
         for projection, decoder, skip in zip(
             self.up_projections, self.decoders, reversed(skips)
         ):
