@@ -1,6 +1,6 @@
 # Decision Log
 
-Dates use the project date available during initialization: 2026-08-24. These entries record decisions already established in the conversation and the existing frozen protocol. They are not new experimental results.
+Dates use the project date available when each entry was recorded. Initialization entries are dated 2026-08-24; later implementation and result entries retain their recorded dates. These entries preserve historical decisions and do not replace earlier records.
 
 ## D-001 - Use Kvasir-SEG as the primary dataset
 
@@ -121,3 +121,12 @@ Dates use the project date available during initialization: 2026-08-24. These en
 - Rationale: The data, model, optimization, checkpoint, and evaluation pipeline has now passed bounded verification in the intended local development and Colab GPU environments before the first full experiment.
 - Evidence: Local bounded CPU sanity-test output and the recorded Colab Tesla T4 CUDA sanity-test result.
 - Status: Complete for runtime verification; the full 100-epoch Pure U-Net experiment remains not run.
+
+## D-016 - Freeze the completed Pure U-Net baseline and proceed to Architecture A
+
+- Date: 2026-09-03
+- Decision: Freeze the completed Pure U-Net baseline as the first experimental reference and proceed to the independent comparison **Architecture A: Pure U-Net + ViL/mLSTM bottleneck**.
+- Rationale: The full 100-epoch Kvasir-SEG run completed under the approved protocol, with the best validation-Dice checkpoint selected at epoch 40. The baseline establishes an operational end-to-end pipeline, meaningful validation-based checkpoint selection, successful learning on many cases, heterogeneous performance, and interpretable localization, false-positive, and under-segmentation failure modes.
+- Evidence: Completed Colab baseline run; best validation Dice `0.828427411334084`; test Dice `0.8241105952570058`; test IoU `0.7412125480073589`; post-hoc fixed-sample and four-lowest-Dice qualitative analysis.
+- Controlled-comparison rule: Reuse the dataset, frozen seed-42 split, preprocessing, evaluation metrics, and standardized training protocol. Architecture A will use the planned sequence-level pattern `[B,C,H,W] -> [B,H*W,C] -> ViL/mLSTM feature block -> [B,H*W,C] -> [B,C,H,W]` and is not implemented by this decision entry.
+- Status: Baseline frozen; next experiment authorized as a separately implemented controlled comparison. The four lowest-Dice cases are post-hoc analysis only and are not representative random samples or tuning data.

@@ -1,6 +1,6 @@
 # Baseline Specification V1
 
-Status: implementation specification and implementation record for the first experiment only.
+Status: frozen implementation specification and completed result record for the first experiment only.
 
 Scope: Pure U-Net, Kvasir-SEG, reproducible training, and binary segmentation evaluation. This document does not specify ViL, VisionLSTM, xLSTM-UNet, Swin, or future comparison experiments.
 
@@ -208,3 +208,61 @@ Pixel-micro aggregation over all test pixels can be reported as a secondary anal
 Implement one from-scratch Pure U-Net with widths `32-64-128-256-256`, two `3x3` Conv–InstanceNorm–LeakyReLU operations per block, MaxPool downsampling, bilinear-plus-`1x1` decoder upsampling, and a one-logit `1x1` head. Train on the frozen 70/15/15 Kvasir-SEG split at `224 x 224`, using `[0,1]` inputs, the 50/50 BCE-plus-soft-Dice loss, AdamW at `1e-3`, cosine decay to `1e-6` over 100 epochs, batch size 4, and seed 42. Select the best validation-Dice checkpoint and report macro test Dice, IoU, precision, and recall at threshold 0.5.
 
 This is the only architecture specified for implementation in this pass. ViL, Swin, and future augmentation or resolution studies remain outside scope.
+
+## Completed baseline result and qualitative analysis
+
+The approved Pure U-Net baseline was trained for the full 100-epoch budget in Colab using the frozen seed-42 Kvasir-SEG split. The best checkpoint was selected by validation Dice at epoch 40. The baseline remains a standardized lightweight research baseline, not a claim of faithful reproduction of the original 2015 U-Net.
+
+### Training record
+
+| Quantity | Recorded value |
+|---|---:|
+| Best validation Dice | `0.828427411334084` at epoch 40 |
+| Validation IoU at best epoch | `0.7402202276` |
+| Epoch-100 train loss | `0.0141890234` |
+| Epoch-100 validation loss | `0.3737061760` |
+| Epoch-100 validation Dice | `0.8146043172` |
+| Epoch-100 validation IoU | `0.7249620276` |
+
+Training loss continued to decrease after approximately epoch 40 while validation loss increased and validation Dice fluctuated or degraded. This is consistent with overfitting in this run and supports validation-Dice checkpoint selection.
+
+### Test record
+
+The following metrics were computed on the 150-image test split using the best epoch-40 checkpoint and the fixed prediction threshold `0.5`.
+
+| Metric | Mean | Standard deviation |
+|---|---:|---:|
+| Dice | `0.8241105952570058` | `0.20469270150681784` |
+| IoU | `0.7412125480073589` | `0.23600287350956678` |
+| Precision | `0.8742652224627301` | `0.20029117152181355` |
+| Recall | `0.8361236784857595` | `0.2207417757217905` |
+| Test loss | `0.2446875516573588` | — |
+
+The high per-image standard deviations indicate heterogeneous performance across the test images. These results are restricted to Kvasir-SEG and do not support broad medical generalization claims.
+
+### Qualitative analysis record
+
+Post-hoc visualization was completed with `scripts/visualize_predictions.py`. The deterministic fixed-sample grid included strong segmentations with Dice approximately `0.9424`, `0.9786`, `0.9546`, `0.8811`, and `0.9689`, as well as one moderate example near `0.725`.
+
+The separate difficult-case grid contains the four lowest-Dice cases from the 150-image test set. They are not representative random samples. The observed failure modes were:
+
+1. missed target with false-positive localization on another salient structure;
+2. near-complete miss with foreground predicted in the wrong region;
+3. severe false-positive over-segmentation;
+4. under-segmentation or incomplete capture of a larger target.
+
+The fixed-sample and lowest-Dice grids serve different post-hoc error-analysis purposes. Neither was used for training, checkpoint selection, hyperparameter selection, or any other experimental decision. No claim is made that a future ViL model will resolve these baseline failure modes.
+
+The qualitative artifacts are written to the ignored experiment output directory:
+
+`experiments/runs/baseline_pure_unet_seed42/visualizations/`
+
+including the fixed-sample grid, lowest-Dice grid, and `visualization_metadata.json`.
+
+## Next controlled experiment
+
+The next experiment is **Architecture A: Pure U-Net + ViL/mLSTM bottleneck**. It will compare the frozen Pure U-Net against an independently trained model with the bottleneck feature-processing pattern adapted from the xLSTM-UNet implementation:
+
+`[B,C,H,W] -> [B,H*W,C] -> ViL/mLSTM feature block -> [B,H*W,C] -> [B,C,H,W]`
+
+The dataset, frozen split, preprocessing, evaluation metrics, and standardized training protocol should remain unchanged unless an explicit later decision records a change. This architecture is not implemented by this baseline record.

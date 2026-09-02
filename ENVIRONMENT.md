@@ -43,7 +43,7 @@ This record describes the current environment observed during the implementation
 - Approved installation: `torch==2.6.0` from the official CPU wheel index; no CUDA PyTorch was installed
 - PyTorch transitive runtime dependencies installed by pip: `filelock`, `networkx`, `jinja2`, `fsspec`, `sympy`, `mpmath`, and `MarkupSafe`; `typing-extensions` and `setuptools` were already present
 - Bounded sanity test: passed for 2 batches on CPU; parameter count `4,814,945`; checkpoint save/reload passed
-- Full 100-epoch training: not run
+- Full 100-epoch Pure U-Net training: completed subsequently in Colab; this local environment record does not contain the Colab run artifacts.
 
 ## Repository status
 

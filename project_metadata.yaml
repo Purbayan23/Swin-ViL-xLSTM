@@ -1,6 +1,6 @@
 project_name: "Project_ViL"
-project_status: "pure_unet_baseline_colab_gpu_sanity_passed_full_training_not_run"
-implementation_status: "pure_unet_implemented_cpu_sanity_passed_full_training_not_run"
+project_status: "pure_unet_baseline_completed_next_vil_mlstm_bottleneck"
+implementation_status: "pure_unet_baseline_completed"
 research_question: "How does Vision-LSTM-based feature processing compare with CNN and Swin Transformer feature processing within a lightweight U-Net framework for 2D medical-image segmentation?"
 primary_dataset:
   name: "Kvasir-SEG"
@@ -8,6 +8,38 @@ primary_dataset:
   task: "binary 2D polyp segmentation"
   split: "data/splits/kvasir_seg_seed42_70_15_15.json (700/150/150, seed 42)"
 task_type: "2D binary medical-image segmentation"
+baseline_experiment:
+  name: "Pure U-Net baseline"
+  status: "completed_and_frozen"
+  protocol: "approved 100-epoch run, seed 42, best checkpoint selected by validation Dice"
+  checkpoint_epoch: 40
+  best_validation_dice: 0.828427411334084
+  best_validation_iou: 0.7402202276
+  epoch_100:
+    train_loss: 0.0141890234
+    validation_loss: 0.3737061760
+    validation_dice: 0.8146043172
+    validation_iou: 0.7249620276
+  test:
+    split_size: 150
+    checkpoint_epoch: 40
+    dice: 0.8241105952570058
+    dice_std: 0.20469270150681784
+    iou: 0.7412125480073589
+    iou_std: 0.23600287350956678
+    precision: 0.8742652224627301
+    precision_std: 0.20029117152181355
+    recall: 0.8361236784857595
+    recall_std: 0.2207417757217905
+    loss: 0.2446875516573588
+    prediction_threshold: 0.5
+  qualitative_analysis:
+    status: "completed_post_hoc"
+    fixed_sample_count: 8
+    difficult_case_count: 4
+    difficult_case_selection: "four lowest-Dice cases from the 150-image test set"
+    artifacts: "experiments/runs/baseline_pure_unet_seed42/visualizations/"
+  next_experiment: "Architecture A: Pure U-Net + ViL/mLSTM bottleneck"
 computational_scope:
   target: "basic laptop and Google Colab"
   initial_scope: "lightweight 2D experiments"
@@ -75,8 +107,8 @@ notebook:
   api: "vision_lstm.VisionLSTM2"
   status: "static_reference_not_executed"
 planned_experiments:
-  - "Pure CNN U-Net baseline"
-  - "U-Net with ViL bottleneck"
+  - "Pure CNN U-Net baseline (completed and frozen)"
+  - "Architecture A: Pure U-Net + ViL/mLSTM bottleneck (next)"
   - "U-Net with ViL at selected deeper encoder stages"
   - "Lightweight Swin comparison"
   - "Optional hierarchical ViL extension"
@@ -88,10 +120,12 @@ implementation_artifacts:
   environment_check: "scripts/environment_check.py"
   colab_dataset_prepare: "scripts/prepare_colab_dataset.py"
   colab_workflow: "COLAB_WORKFLOW.md"
+  visualization: "scripts/visualize_predictions.py"
+  visualization_outputs: "experiments/runs/baseline_pure_unet_seed42/visualizations/ (gitignored)"
   model: "src/models/pure_unet.py"
   dataset: "src/data/kvasir_seg.py"
   manifest: "data/splits/kvasir_seg_seed42_70_15_15.json"
-  full_training_status: "not_run"
+  full_training_status: "completed_100_epochs"
   runtime_sanity_status: "passed_cpu; passed_colab_gpu_tesla_t4"
 baseline_mask_preprocessing:
   grayscale: true
