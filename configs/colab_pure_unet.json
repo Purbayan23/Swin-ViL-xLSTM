@@ -1,0 +1,12 @@
+{
+  "extends": "configs/baseline_pure_unet.json",
+  "dataset": {
+    "root": "/content/kvasir-seg"
+  },
+  "training": {
+    "checkpoint_dir": "/content/drive/MyDrive/Project_ViL/experiments/runs/baseline_pure_unet_seed42"
+  },
+  "sanity": {
+    "checkpoint_path": "/content/drive/MyDrive/Project_ViL/experiments/sanity/baseline_pure_unet_seed42.pt"
+  }
+}

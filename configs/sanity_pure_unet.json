@@ -1,0 +1,7 @@
+{
+  "extends": "configs/baseline_pure_unet.json",
+  "sanity": {
+    "max_batches": 2,
+    "checkpoint_path": "experiments/sanity/baseline_pure_unet_seed42.pt"
+  }
+}

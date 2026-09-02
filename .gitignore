@@ -1,0 +1,22 @@
+# Python and notebook artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.ipynb_checkpoints/
+
+# Local environments and logs
+.venv/
+venv/
+env/
+*.log
+
+# Local dataset and generated experiment artifacts
+data/Kvasir-SEG/
+experiments/
+*.pt
+*.pth
+*.ckpt
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db

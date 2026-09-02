@@ -1,0 +1,6 @@
+{
+  "extends": "configs/colab_pure_unet.json",
+  "sanity": {
+    "max_batches": 2
+  }
+}

@@ -1,0 +1,984 @@
+Yes. At this point I would treat the project as having a **frozen experimental direction but not yet a frozen implementation**. The Codex audit gives us enough evidence to define the protocol. 
+
+# 1. Experimental protocol — project specification
+
+## A. Scientific objective
+
+### Main research question
+
+> **How does Vision-LSTM-based feature processing compare with CNN and Swin Transformer feature processing within a lightweight U-Net framework for 2D medical-image segmentation?**
+
+This is an **experimental/educational PhD-interview project**, not a novelty claim.
+
+We are not claiming:
+
+* a new architecture;
+* state-of-the-art performance;
+* that ViL is inherently better than Swin;
+* that ViL is inherently faster;
+* general superiority in medical segmentation.
+
+Our conclusion will be restricted to the experiments and datasets we actually evaluate.
+
+---
+
+# 2. Literature foundation
+
+The project is based on this chronological chain:
+
+```text
+2021
+Swin-Unet
+   │
+   │ hierarchical Transformer U-Net
+   ▼
+2024
+xLSTM
+   │
+   ▼
+Vision-LSTM
+   │
+   ▼
+xLSTM-UNet
+```
+
+The roles are different:
+
+| Source      | Role                                                               |
+| ----------- | ------------------------------------------------------------------ |
+| Swin-Unet   | Hierarchical U-shaped Transformer segmentation architecture        |
+| xLSTM       | Underlying recurrent/memory mechanism                              |
+| Vision-LSTM | Applying xLSTM/mLSTM to visual token sequences                     |
+| xLSTM-UNet  | Demonstrates ViL/xLSTM integration into medical U-Net segmentation |
+| Swin blog   | Supplementary conceptual explanation                               |
+
+The source-code audit confirms that these should **not** be treated as interchangeable implementations. 
+
+---
+
+# 3. Dataset
+
+## Primary dataset
+
+### **Kvasir-SEG**
+
+Task:
+
+> Binary polyp segmentation.
+
+Approximately:
+
+* 1,000 RGB endoscopy images
+* corresponding pixel-level masks
+* variable original resolutions
+
+The audit found it appropriate for our initial 2D experiments and practical for Colab. 
+
+### Initial image resolution
+
+I recommend we start with:
+
+> **224 × 224**
+
+rather than immediately using 352×352 or full resolution.
+
+Reason:
+
+* manageable memory;
+* compatible with the Swin-Unet reference configuration;
+* convenient for a hierarchical architecture;
+* enough for initial feasibility.
+
+Later, **224 → 256/320/352** can be an experiment if resources permit.
+
+We must use identical image/mask transformations across models.
+
+---
+
+# 4. Dataset contract
+
+Before any model is trained, define exactly:
+
+```text
+Input:
+RGB image
+
+Target:
+binary mask
+
+Image:
+float tensor [3,H,W]
+
+Mask:
+binary tensor [1,H,W]
+
+Output:
+segmentation logits [B,1,H,W]
+```
+
+Mask resizing must use **nearest-neighbor interpolation**.
+
+Image resizing can use the selected image interpolation consistently across experiments.
+
+We need a fixed:
+
+```text
+train
+validation
+test
+```
+
+split.
+
+And record:
+
+* split file/list;
+* random seed;
+* dataset version/source;
+* preprocessing version.
+
+Don't change the split halfway through the project.
+
+---
+
+# 5. Common training protocol
+
+The goal is to make the models as comparable as reasonably possible.
+
+Hold constant:
+
+### Data
+
+* same dataset
+* same split
+* same resolution
+* same preprocessing
+* same augmentation
+* same normalization
+
+### Training
+
+* same optimizer
+* same scheduler
+* same loss
+* same batch-size policy
+* same number of optimizer updates
+* same early-stopping rule
+* same checkpoint-selection rule
+* same random seeds
+
+### Evaluation
+
+* identical prediction thresholding
+* identical Dice implementation
+* identical IoU implementation
+* identical test set
+* identical aggregation procedure
+
+The audit correctly warns that perfect matching isn't possible because CNN, Swin and ViL have fundamentally different computational structures and normalization/positional mechanisms. 
+
+We therefore document unavoidable differences rather than pretending they don't exist.
+
+---
+
+# 6. Model progression
+
+This is the most important part.
+
+## Experiment 0 — Pure U-Net
+
+```text
+Input
+ ↓
+CNN Encoder
+ ↓
+CNN Bottleneck
+ ↓
+CNN Decoder
+ ↓
+Mask
+```
+
+This is the **primary baseline**.
+
+It validates:
+
+* dataset;
+* preprocessing;
+* segmentation pipeline;
+* loss;
+* metrics;
+* training;
+* checkpointing.
+
+Nothing else should be trusted until this works.
+
+---
+
+# 7. Experiment 1 — ViL bottleneck
+
+This is our first xLSTM-related experiment.
+
+```text
+CNN Encoder
+     ↓
+deepest feature
+[B,C,H,W]
+     ↓
+[B,H×W,C]
+     ↓
+ViL
+     ↓
+[B,H×W,C]
+     ↓
+[B,C,H,W]
+     ↓
+CNN Decoder
+```
+
+The decoder remains unchanged.
+
+This is strongly motivated by the bottleneck configuration in xLSTM-UNet. 
+
+### Important
+
+For this first experiment:
+
+> **Use a custom sequence-level ViL block based on the xLSTM-UNet implementation pattern.**
+
+Don't directly insert the complete official `VisionLSTM2`.
+
+The audit found that `VisionLSTM2` is a complete image backbone with its own patch embedding and positional encoding, rather than a simple `[B,N,C] → [B,N,C]` feature-processing block. 
+
+---
+
+# 8. Experiment 2 — Multi-stage/deep ViL
+
+Then move ViL into selected deeper encoder stages.
+
+Conceptually:
+
+```text
+Stage 1     CNN
+             ↓
+Stage 2     CNN
+             ↓
+Stage 3     CNN + ViL
+             ↓
+Stage 4     CNN + ViL
+             ↓
+Decoder
+```
+
+The preferred sequence is:
+
+```text
+downsample
+    ↓
+CNN stage
+    ↓
+ViL
+    ↓
+save skip
+```
+
+rather than applying ViL at full resolution before downsampling.
+
+Why?
+
+* shorter sequence;
+* lower memory;
+* closer to xLSTM-UNet's implementation;
+* skip tensor already has final channel count.
+
+The audit supports this configuration as the most natural progression from bottleneck-only ViL. 
+
+---
+
+# 9. Experiment 3 — Swin comparison
+
+Only after the CNN and ViL pipeline works.
+
+Build a **lightweight Swin-based counterpart** within the same experimental framework.
+
+Our preferred comparison is not:
+
+```text
+Official Swin-Unet
+vs
+our U-Net
+```
+
+because their complete architectures/training protocols differ.
+
+Instead:
+
+```text
+same segmentation scaffold
+          │
+    ┌─────┼─────┐
+    ▼     ▼     ▼
+   CNN   Swin   ViL
+```
+
+Ideally the:
+
+* stage resolutions;
+* feature widths;
+* skip connections;
+* decoder;
+* segmentation head
+
+are shared or as closely matched as architecture permits.
+
+This is a **controlled comparison**, not a claim of exact equivalence.
+
+---
+
+# 10. Optional Experiment 4 — Hierarchical ViL
+
+Only after everything above works.
+
+```text
+Input
+ ↓
+ViL Stage 1
+ ↓
+Downsample
+ ↓
+ViL Stage 2
+ ↓
+Downsample
+ ↓
+ViL Stage 3
+ ↓
+Bottleneck
+ ↓
+U-Net decoder
+```
+
+This is the most ambitious part.
+
+It is inspired by:
+
+* hierarchical Swin-Unet;
+* Vision-LSTM;
+* xLSTM-UNet.
+
+But it is **not a direct reproduction** of any of those papers.
+
+The Vision-LSTM paper's architecture is isotropic and the hierarchical direction is not directly implemented there. 
+
+Therefore this should be an **optional extension**, not the foundation of the project.
+
+---
+
+# 11. Metrics
+
+### Segmentation
+
+Primary:
+
+[
+Dice = \frac{2|P\cap G|}{|P|+|G|}
+]
+
+and:
+
+[
+IoU = \frac{|P\cap G|}{|P\cup G|}
+]
+
+Also report:
+
+* Precision
+* Recall
+
+Potential later metric:
+
+* HD95 / boundary metric
+
+but don't make it mandatory for the first baseline.
+
+---
+
+# 12. Computational measurements
+
+For every model we should eventually record:
+
+### Model
+
+* parameter count
+* trainable parameter count
+
+### Computation
+
+* FLOPs/MACs where meaningful
+* peak GPU memory
+
+### Runtime
+
+* training time per epoch
+* total training time
+* inference time/image
+
+### Performance
+
+* Dice
+* IoU
+* Precision
+* Recall
+
+This is especially important because **we are not going to assume ViL is computationally cheaper than Swin**. Actual implementation and hardware matter. 
+
+---
+
+# 13. Repeated experiments
+
+Ideally:
+
+> **3 random seeds**
+
+for the final comparison.
+
+Report:
+
+```text
+mean ± standard deviation
+```
+
+For the early development stage, one seed is fine.
+
+Don't waste Colab compute running three seeds while you're still debugging the dataset.
+
+---
+
+# 14. Pretraining policy
+
+This needs to be particularly controlled.
+
+For the **first scientific comparison**, I recommend:
+
+> **Train all models from scratch.**
+
+Why?
+
+Swin and ViL have ImageNet pretrained weights available, but using pretrained Swin/ViL while training the CNN baseline from scratch would introduce a major confound. The audit explicitly identifies this issue. 
+
+Later, a separate experiment can ask:
+
+> Does pretraining change the comparison?
+
+But that's not part of the first experiment.
+
+---
+
+# 15. Expected experiment table
+
+Eventually we'll have something like:
+
+| Model                         | Params | Dice | IoU | Time/epoch | VRAM |
+| ----------------------------- | -----: | ---: | --: | ---------: | ---: |
+| Pure U-Net                    |      — |    — |   — |          — |    — |
+| U-Net + ViL-Bottleneck        |      — |    — |   — |          — |    — |
+| U-Net + ViL-DeepEncoder       |      — |    — |   — |          — |    — |
+| Swin-based U-Net              |      — |    — |   — |          — |    — |
+| Hierarchical ViL *(optional)* |      — |    — |   — |          — |    — |
+
+The values are intentionally blank right now.
+
+We **measure them**.
+
+---
+
+# 16. Qualitative analysis
+
+Don't only report numbers.
+
+For representative test images show:
+
+```text
+Input
+Ground Truth
+U-Net
+ViL-Bottleneck
+ViL-Encoder
+Swin
+```
+
+Then specifically inspect:
+
+* boundaries;
+* small polyps;
+* low-contrast polyps;
+* large irregular polyps;
+* difficult backgrounds;
+* false positives;
+* false negatives.
+
+This is particularly valuable for an interview because you can discuss *why* the models differ.
+
+---
+
+# 17. Ablation philosophy
+
+The main ablation should be:
+
+### Where does ViL help?
+
+```text
+No ViL
+     ↓
+Bottleneck ViL
+     ↓
+Deep encoder ViL
+```
+
+Then potentially:
+
+### How much ViL?
+
+```text
+1 block
+2 blocks
+3 blocks
+```
+
+But only if compute permits.
+
+We don't need dozens of experiments.
+
+A small number of well-controlled experiments is much stronger than a giant table of poorly controlled results.
+
+---
+
+# 18. What we explicitly are NOT doing
+
+At least initially:
+
+* ❌ 3D segmentation
+* ❌ BraTS/AMOS-scale experiments
+* ❌ ImageNet pretraining
+* ❌ reproducing all paper results
+* ❌ claiming SOTA
+* ❌ claiming novelty
+* ❌ claiming ViL is faster
+* ❌ claiming ViL is better
+* ❌ using multiple datasets immediately
+* ❌ continual learning
+* ❌ stacking adaptations
+* ❌ LoRA/MoRA/xLSTM combinations
+
+The project needs a **single clean scientific story**.
+
+---
+
+# 19. Repository/reference structure
+
+And **yes — keeping the raw codebases is very beneficial.**
+
+In fact, I strongly recommend separating **reference material** from **your own implementation**.
+
+Do **not** modify the original repositories and then use them as your project code.
+
+I'd structure the master project like this:
+
+```text
+xLSTM-Segmentation/
+│
+├── README.md
+├── PROJECT_SPECIFICATION.md
+├── pyproject.toml / requirements.txt
+├── .gitignore
+│
+├── configs/
+│   ├── unet_baseline.yaml
+│   ├── vil_bottleneck.yaml
+│   ├── vil_encoder.yaml
+│   └── swin_baseline.yaml
+│
+├── src/
+│   ├── data/
+│   ├── models/
+│   │   ├── unet/
+│   │   ├── vil/
+│   │   └── swin/
+│   ├── losses/
+│   ├── metrics/
+│   ├── training/
+│   ├── evaluation/
+│   └── utils/
+│
+├── experiments/
+│   ├── configs/
+│   ├── runs/
+│   └── results/
+│
+├── notebooks/
+│   └── exploration/
+│
+├── scripts/
+│   ├── train.py
+│   ├── evaluate.py
+│   └── ...
+│
+├── tests/
+│
+├── docs/
+│   ├── architecture/
+│   ├── experiments/
+│   └── notes/
+│
+└── references/
+    ├── papers/
+    ├── blogs/
+    ├── notebooks/
+    ├── repositories/
+    │   ├── Swin-Unet/
+    │   ├── vision-lstm/
+    │   └── xLSTM-UNet/
+    └── audits/
+```
+
+That is what I recommend.
+
+---
+
+# 20. What belongs in `references/`
+
+### `references/papers/`
+
+Keep the exact PDFs:
+
+```text
+2105.05537v1_Swin-Unet.pdf
+2405.04517v1_xLSTM.pdf
+2406.04303v2_Vision-LSTM.pdf
+2407.01530v2_xLSTM-UNet.pdf
+```
+
+Don't rename them later without reason.
+
+---
+
+### `references/repositories/`
+
+Yes, keep the **three raw repositories**.
+
+But preferably:
+
+```text
+repositories/
+├── Swin-Unet/
+├── vision-lstm/
+└── xLSTM-UNet/
+```
+
+and record the exact commit that you audited.
+
+This is extremely useful for reproducibility.
+
+The Codex audit already identified specific commits. 
+
+I'd add:
+
+```text
+references/repositories/README.md
+```
+
+containing:
+
+```text
+Repository
+URL
+Commit
+Date accessed
+Purpose
+License
+```
+
+For example:
+
+```text
+Swin-Unet
+URL: ...
+Commit: f48f623...
+Purpose: hierarchical Transformer U-Net reference
+```
+
+---
+
+# 21. Keep the notebook
+
+Absolutely.
+
+Put:
+
+```text
+references/notebooks/
+└── VisionLSTM_CIFAR10_reference.ipynb
+```
+
+**Do not modify the original.**
+
+If you experiment with it, make a copy under:
+
+```text
+notebooks/exploration/
+```
+
+This creates a clean distinction:
+
+```text
+reference notebook
+        ≠
+your experimental notebook
+```
+
+---
+
+# 22. Add architecture diagrams
+
+I strongly recommend:
+
+```text
+references/architecture/
+```
+
+containing your own diagrams/notes:
+
+```text
+swin_unet_architecture.png
+vision_lstm_architecture.png
+xlstm_unet_architecture.png
+our_protocol_v1.png
+```
+
+More importantly, keep editable source if possible:
+
+```text
+.drawio
+.svg
+```
+
+rather than only PNG.
+
+---
+
+# 23. Keep the Codex audits
+
+This is something I particularly recommend.
+
+```text
+references/audits/
+├── codex_source_audit_v1.md
+└── codex_architecture_audit_v2.md
+```
+
+The audits become part of your research trail.
+
+The first audit established the repository/code correspondence; the second narrowed the architecture and recommended the ViL bottleneck first.  
+
+That is useful later when you ask:
+
+> Why did I choose this architecture?
+
+You can trace the decision.
+
+---
+
+# 24. Also keep an experiment decision log
+
+I recommend:
+
+```text
+docs/
+└── DECISION_LOG.md
+```
+
+Every major decision gets:
+
+```text
+Date:
+Decision:
+Reason:
+Evidence:
+Alternatives rejected:
+```
+
+For example:
+
+```text
+Decision:
+Use Kvasir-SEG instead of ISIC.
+
+Reason:
+Different dataset from previous work and suitable for
+2D binary segmentation under Colab constraints.
+
+Evidence:
+Kvasir-SEG dataset documentation.
+
+Alternatives:
+ISIC — rejected for this project because we want a
+different benchmark.
+```
+
+This is **excellent preparation for a PhD interview**.
+
+You can demonstrate that your choices weren't arbitrary.
+
+---
+
+# 25. Keep experiment metadata
+
+For every actual run:
+
+```text
+experiments/runs/
+    2026-XX-XX_unet_seed42/
+        config.yaml
+        metrics.csv
+        train.log
+        checkpoint.pt
+```
+
+Never rely on memory like:
+
+> "I think that model used 64 channels."
+
+Every run should be reproducible from its configuration.
+
+---
+
+# 26. Keep raw results separate from processed results
+
+I'd use:
+
+```text
+experiments/
+├── runs/
+├── raw_results/
+└── processed_results/
+```
+
+For example:
+
+```text
+raw_results/
+    unet_seed42.json
+    vil_bot_seed42.json
+
+processed_results/
+    comparison_table.csv
+    summary.csv
+```
+
+Don't manually overwrite experimental results.
+
+---
+
+# 27. One thing I would NOT put inside the repository
+
+### Dataset itself.
+
+Don't put:
+
+```text
+Kvasir-SEG/
+```
+
+inside Git.
+
+Instead:
+
+```text
+data/
+├── raw/          # usually .gitignored
+├── processed/    # usually .gitignored
+└── splits/
+```
+
+Keep the **split files** under version control, but not necessarily the image dataset.
+
+---
+
+# 28. One more useful reference: environment information
+
+Create:
+
+```text
+references/environment/
+```
+
+and record:
+
+```text
+Python version
+PyTorch version
+CUDA version
+GPU type
+torchvision version
+ViL dependencies
+Swin dependencies
+```
+
+Why?
+
+Because these repositories are from different periods and may have different dependency assumptions.
+
+Your exact environment becomes part of reproducibility.
+
+---
+
+# 29. The final conceptual structure
+
+Your entire research project should eventually look like:
+
+```text
+                     LITERATURE
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+     Swin-Unet          xLSTM            ViL
+        │                │                │
+        └────────────────┼────────────────┘
+                         │
+                   CODE AUDIT
+                         │
+                  PROJECT SPEC
+                         │
+                    Kvasir-SEG
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+          Pure U-Net             Swin
+              │                     │
+              └──────────┬──────────┘
+                         │
+                  ViL bottleneck
+                         │
+                  ViL deep encoder
+                         │
+                  optional hierarchy
+                         │
+                    EVALUATION
+                         │
+          ┌──────────────┼──────────────┐
+          │              │              │
+        Dice            IoU          Compute
+          │              │              │
+          └──────────────┼──────────────┘
+                         │
+                    ANALYSIS
+                         │
+                    REPORT/DEMO
+```
+
+### The key principle
+
+**Reference code is evidence, not your project code.**
+
+Keep the three raw repositories and notebook under `references/`, freeze their commits, and never silently modify them. Your own `src/` should contain only code that you deliberately implement/adapt and document.
+
+That separation will make the project much easier to reason about, reproduce, debug, and eventually explain to your PhD interviewer.
