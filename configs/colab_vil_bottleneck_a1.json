@@ -1,0 +1,12 @@
+{
+  "extends": "configs/vil_bottleneck_a1.json",
+  "dataset": {
+    "root": "/content/kvasir-seg"
+  },
+  "training": {
+    "checkpoint_dir": "/content/drive/MyDrive/Project_ViL/experiments/runs/architecture_a1_alternating_vil_bottleneck_seed42"
+  },
+  "sanity": {
+    "checkpoint_path": "/content/drive/MyDrive/Project_ViL/experiments/sanity/architecture_a1_alternating_vil_bottleneck_seed42.pt"
+  }
+}

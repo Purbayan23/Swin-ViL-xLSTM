@@ -152,3 +152,20 @@ Dates use the project date available when each entry was recorded. Initializatio
 - Scope: Dataset, preprocessing, split, traversal, causal 1-D convolution, decoder, loss, optimizer, scheduler, batch size, epoch budget, seed, checkpoint rule, and prediction threshold are unchanged. The interrupted epoch-78 training history/checkpoint metadata is historical and is not reclassified as a completed experiment.
 - Evidence: Reference `xLSTM-UNet-PyTorch-main/UxLSTM/nnunetv2/nets/vision_lstm.py`; corrected project implementation; focused CPU tests and bounded CPU sanity test.
 - Status: Corrected implementation; full Architecture A training remains not run.
+
+## D-019 - Freeze corrected Architecture A0 after completed training
+
+- Date: 2026-09-03
+- Decision: Rename the corrected single-direction ViL/mLSTM bottleneck comparison as Architecture A0 and freeze it as a valid completed experiment.
+- Result: The full 100-epoch run selected epoch `51` by validation Dice `0.8005566217`; test Dice `0.8175639115`, test IoU `0.7270158563`, precision `0.8651886918`, and recall `0.8180166952`.
+- Provenance: The earlier incorrect-head, initialization-confounded epoch-78 run remains historical and incomplete and is not treated as an experimental result.
+- Status: A0 frozen; no further implementation or configuration changes are permitted for A0.
+
+## D-020 - Test alternating spatial traversal before Architecture B
+
+- Date: 2026-09-03
+- Decision: Introduce Architecture A1 as an independent controlled ablation of frozen A0 before proceeding to Architecture B.
+- Rationale: The Vision-LSTM reference uses a sequential `ViLBlockPair` with top-left-to-bottom-right and bottom-right-to-top-left traversals. A1 tests that spatial sequence-processing choice while preserving A0’s U-Net, bottleneck location, corrected mLSTM grouping, causal 1-D convolution, data, optimization, and evaluation protocol.
+- Definition: A1 applies two independently parameterized blocks sequentially. The reverse-direction block receives a sequence flip, processes left-to-right, and its output is flipped back to original token positions before restoration. No averaging, concatenation, positional encoding, or patch embedding is added.
+- Parameters: Q/K/V use `128` heads of dimension `4`; each matrix-LSTM uses `4` heads of dimension `128`; one directional pair gives a derived total of `5,645,937` parameters.
+- Status: A1 implementation and bounded CPU sanity validation passed; full A1 training has not started.

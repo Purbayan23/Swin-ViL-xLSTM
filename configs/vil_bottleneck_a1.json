@@ -1,0 +1,22 @@
+{
+  "extends": "configs/baseline_pure_unet.json",
+  "name": "architecture_a1_alternating_vil_bottleneck_v1",
+  "model": {
+    "name": "unet_vil_bottleneck_a1",
+    "vil_bottleneck_a1": {
+      "depth": 1,
+      "expansion": 2,
+      "qkv_block_size": 4,
+      "conv_kernel_size": 4,
+      "proj_bias": false,
+      "conv_bias": true,
+      "norm_eps": 1e-5
+    }
+  },
+  "training": {
+    "checkpoint_dir": "experiments/runs/architecture_a1_alternating_vil_bottleneck_seed42"
+  },
+  "sanity": {
+    "checkpoint_path": "experiments/sanity/architecture_a1_alternating_vil_bottleneck_seed42.pt"
+  }
+}

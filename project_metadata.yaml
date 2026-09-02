@@ -1,6 +1,6 @@
 project_name: "Project_ViL"
-project_status: "pure_unet_baseline_completed_architecture_a_sanity_passed"
-implementation_status: "pure_unet_baseline_and_architecture_a_implemented"
+project_status: "pure_unet_baseline_a0_completed_a1_current"
+implementation_status: "pure_unet_baseline_a0_completed_a1_implemented"
 research_question: "How does Vision-LSTM-based feature processing compare with CNN and Swin Transformer feature processing within a lightweight U-Net framework for 2D medical-image segmentation?"
 primary_dataset:
   name: "Kvasir-SEG"
@@ -39,10 +39,10 @@ baseline_experiment:
     difficult_case_count: 4
     difficult_case_selection: "four lowest-Dice cases from the 150-image test set"
     artifacts: "experiments/runs/baseline_pure_unet_seed42/visualizations/"
-  next_experiment: "Architecture A: Pure U-Net + ViL/mLSTM bottleneck"
+  next_experiment: "Architecture A1: Pure U-Net + alternating/bidirectional ViL/mLSTM bottleneck"
 architecture_a:
-  name: "Architecture A: Pure U-Net + ViL/mLSTM bottleneck"
-  status: "implemented_bounded_cpu_sanity_passed_full_training_not_run"
+  name: "Architecture A0: Pure U-Net + single-direction ViL/mLSTM bottleneck"
+  status: "completed_and_frozen"
   model_config: "configs/vil_bottleneck.json"
   sanity_config: "configs/sanity_vil_bottleneck.json"
   colab_config: "configs/colab_vil_bottleneck.json"
@@ -64,7 +64,39 @@ architecture_a:
   initialization_policy: "initialize shared Pure U-Net modules first, then attach the independently initialized ViL/mLSTM processor; corresponding CNN parameters must match under seed 42"
   additional_dependencies: "none; native PyTorch implementation"
   reference_pattern: "xLSTM-UNet UxLSTMBot_2d.py and vision_lstm.py"
+  full_training_status: "completed_100_epochs"
+  checkpoint_epoch: 51
+  best_validation_dice: 0.8005566217
+  test:
+    dice: 0.8175639115
+    iou: 0.7270158563
+    precision: 0.8651886918
+    recall: 0.8180166952
+  historical_incomplete_run: "incorrect-head and initialization-confounded epoch-78 run; not a valid result"
+architecture_a1:
+  name: "Architecture A1: Pure U-Net + alternating/bidirectional ViL/mLSTM bottleneck"
+  status: "implemented_bounded_cpu_sanity_passed_full_training_not_run"
+  purpose: "independent traversal ablation of frozen A0 before Architecture B"
+  model_config: "configs/vil_bottleneck_a1.json"
+  sanity_config: "configs/sanity_vil_bottleneck_a1.json"
+  colab_config: "configs/colab_vil_bottleneck_a1.json"
+  colab_sanity_config: "configs/colab_sanity_vil_bottleneck_a1.json"
+  tensor_flow: "[B,256,14,14] -> [B,196,256] -> forward block -> reverse block with flip/alignment -> [B,196,256] -> [B,256,14,14]"
+  directional_blocks: 2
+  directional_parameters: "independent"
+  sequence_order: "row-major; top-left to bottom-right then bottom-right to top-left, restored to original positions"
+  sequence_length: 196
+  embedding_dimension: 256
+  internal_dimension: 512
+  qkv_heads: 128
+  qkv_head_dimension: 4
+  mLSTM_heads: 4
+  mLSTM_head_dimension: 128
+  positional_encoding: false
+  patch_embedding: false
+  parameters: 5645937
   full_training_status: "not_run"
+  bounded_sanity_status: "passed_cpu"
 computational_scope:
   target: "basic laptop and Google Colab"
   initial_scope: "lightweight 2D experiments"
@@ -133,7 +165,10 @@ notebook:
   status: "static_reference_not_executed"
 planned_experiments:
   - "Pure CNN U-Net baseline (completed and frozen)"
-  - "Architecture A: Pure U-Net + ViL/mLSTM bottleneck (implemented; full run pending)"
+  - "Architecture A0: Pure U-Net + single-direction ViL/mLSTM bottleneck (completed and frozen)"
+  - "Architecture A1: Pure U-Net + alternating/bidirectional ViL/mLSTM bottleneck (current)"
+  - "Optional A2: A1 plus positional encoding"
+  - "Architecture B and later comparisons"
   - "U-Net with ViL at selected deeper encoder stages"
   - "Lightweight Swin comparison"
   - "Optional hierarchical ViL extension"
@@ -163,6 +198,6 @@ baseline_mask_preprocessing:
 unresolved_decisions:
   - "Exact Kvasir-SEG release/version identifier: TBD"
   - "Aspect-ratio-preserving preprocessing: future controlled experiment"
-  - "Exact ViL implementation/configuration for later variants: TBD; Architecture A uses the documented project-local xLSTM-UNet-pattern block"
+  - "A1 implementation and bounded validation: current task; positional encoding remains excluded until optional A2"
   - "Exact lightweight Swin configuration: TBD"
   - "Pretrained-weight experiment design: TBD; first controlled comparison is from scratch"

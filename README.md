@@ -12,7 +12,9 @@ The baseline uses 1,000 verified Kvasir-SEG image/mask pairs with a deterministi
 
 The local laptop/Codex environment is used for CPU development and debugging, while Google Colab is used for GPU experiments. The reproducible qualitative post-hoc workflow is provided by `scripts/visualize_predictions.py`; it creates a deterministic eight-image fixed-sample grid and a separate grid of the four lowest-Dice test cases without changing training or checkpoint selection. The difficult cases showed localization errors, false-positive over-segmentation, near-complete misses, and incomplete capture of larger targets. These are baseline observations, not claims that a future ViL model will solve them.
 
-Architecture A, `Pure U-Net + ViL/mLSTM bottleneck`, is implemented as a project-local sequence-level bottleneck adapted from the xLSTM-UNet feature-processing pattern. It has passed the bounded CPU sanity test and focused unit tests, but its full 100-epoch experiment has not been run.
+Architecture A0, `Pure U-Net + single-direction ViL/mLSTM bottleneck`, is complete and frozen. Its best validation Dice was `0.8005566217` at epoch 51; test Dice was `0.8175639115`, test IoU `0.7270158563`, precision `0.8651886918`, and recall `0.8180166952`. The earlier incorrect-head, initialization-confounded epoch-78 run remains historical and incomplete.
+
+The current experiment is Architecture A1, an independent alternating/bidirectional ViL/mLSTM bottleneck ablation. It retains A0’s U-Net, data, preprocessing, loss, optimizer, scheduler, and evaluation protocol, uses two sequential independent directional blocks with reverse-sequence alignment, and deliberately excludes positional encoding. Architecture B is deferred until A1 is evaluated.
 
 ## Reference structure
 
@@ -27,10 +29,10 @@ Architecture A, `Pure U-Net + ViL/mLSTM bottleneck`, is implemented as a project
 ## Planned progression
 
 1. Pure CNN U-Net baseline (completed and frozen)
-2. Architecture A: Pure U-Net + ViL/mLSTM bottleneck (implemented; full run pending)
-3. U-Net with ViL at selected deeper encoder stages
-4. Lightweight Swin comparison
-5. Optional hierarchical ViL extension
+2. Architecture A0: Pure U-Net + single-direction ViL/mLSTM bottleneck (completed and frozen)
+3. Architecture A1: alternating/bidirectional ViL/mLSTM bottleneck ablation (current)
+4. Optional A2: A1 plus positional encoding
+5. Architecture B and later comparisons
 
 The minimal Colab workflow is documented in `COLAB_WORKFLOW.md`. It copies the persistent Drive dataset once to `/content/kvasir-seg`, reads the local copy during training, and writes checkpoints/results back to Drive. The baseline configuration is `configs/colab_pure_unet.json`; qualitative predictions can be generated with:
 

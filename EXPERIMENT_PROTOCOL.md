@@ -4,7 +4,9 @@ This remains the cross-model planning protocol. The first Pure U-Net implementat
 
 The first Pure U-Net baseline is now complete. It used the frozen Kvasir-SEG split and approved 100-epoch protocol; the best validation-Dice checkpoint was epoch 40, with test Dice `0.8241105952570058` and test IoU `0.7412125480073589`. The complete result table and post-hoc qualitative analysis are recorded in `BASELINE_SPECIFICATION_V1.md`.
 
-The next controlled comparison is **Architecture A: Pure U-Net + ViL/mLSTM bottleneck**. Its project-local implementation has passed bounded CPU sanity validation, but its full 100-epoch run remains pending. It will keep the dataset, frozen split, preprocessing, metrics, and standardized training protocol unchanged unless a later decision explicitly records a change. The implemented sequence-level transformation is `[B,C,H,W] -> [B,H*W,C] -> ViL/mLSTM feature block -> [B,H*W,C] -> [B,C,H,W]`; it is not part of the completed baseline result.
+The corrected single-direction bottleneck comparison is **Architecture A0**. It completed the full 100-epoch run with the best validation-Dice checkpoint at epoch 51, validation Dice `0.8005566217`, test Dice `0.8175639115`, test IoU `0.7270158563`, precision `0.8651886918`, and recall `0.8180166952`. A0 is now frozen. The earlier incorrect-head, initialization-confounded epoch-78 run remains historical and incomplete.
+
+The current experiment is **Architecture A1: Pure U-Net + alternating bidirectional ViL/mLSTM bottleneck**. A1 is an independent controlled ablation of frozen A0 introduced before Architecture B to test whether spatial sequence traversal affects the bottleneck result. It retains the same `[B,256,14,14] -> [B,196,256] -> [B,196,256] -> [B,256,14,14]` contract and all A0 controls, with no positional encoding or patch embedding. It follows the cited Vision-LSTM `ViLBlockPair`: an independent top-left-to-bottom-right block is followed by an independent bottom-right-to-top-left block, implemented by flipping the sequence before the second block and flipping its output back for spatial alignment. Outputs are composed sequentially, not averaged or concatenated.
 
 ## Data
 
@@ -22,12 +24,12 @@ The next controlled comparison is **Architecture A: Pure U-Net + ViL/mLSTM bottl
 ## Initial model sequence
 
 1. Pure CNN U-Net (completed).
-2. CNN U-Net with a custom sequence-level ViL/mLSTM bottleneck (implemented; full run pending).
-3. CNN U-Net with ViL at selected deeper encoder stages.
-4. Lightweight Swin comparison using the common experimental scaffold where possible.
-5. Optional hierarchical ViL extension.
+2. Architecture A0: single-direction ViL/mLSTM bottleneck (completed and frozen).
+3. Architecture A1: alternating bidirectional ViL/mLSTM bottleneck ablation (current experiment).
+4. Optional A2: A1 plus positional encoding.
+5. Architecture B and later comparisons.
 
-The first ViL experiment should use the custom sequence-level ViL integration pattern from xLSTM-UNet rather than treating the complete official VisionLSTM2 backbone as a direct Swin-block replacement.
+The A0 and A1 experiments use the custom sequence-level ViL integration pattern from xLSTM-UNet rather than treating the complete official VisionLSTM2 backbone as a direct Swin-block replacement. A1 adopts only the cited directional pair mechanism; positional encoding remains deliberately excluded.
 
 ## Common training variables
 

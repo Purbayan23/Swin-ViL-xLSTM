@@ -1,12 +1,12 @@
 # Architecture Specification V1
 
-Status: architecture specification and implementation record. The Pure U-Net baseline is complete; Architecture A is implemented and has passed bounded CPU sanity validation. Architecture A has not been fully trained.
+Status: architecture specification and implementation record. The Pure U-Net baseline and corrected Architecture A0 are complete and frozen. Architecture A1 is the current independent traversal ablation; its implementation and bounded CPU sanity validation are complete, but its full training has not run.
 
 Date: 2026-09-03
 
 This document converts the current project protocol and the inspected reference source trees into a tensor-level implementation target. It deliberately separates source-backed facts from engineering recommendations and unresolved decisions.
 
-The Pure U-Net choices for the first experiment are frozen in `BASELINE_SPECIFICATION_V1.md`. Architecture A changes only the bottleneck feature-processing mechanism; its encoder, decoder, skips, data contract, loss, optimizer, scheduler, and run protocol remain shared with the baseline.
+The Pure U-Net choices for the first experiment are frozen in `BASELINE_SPECIFICATION_V1.md`. Corrected Architecture A0 changes only the bottleneck feature-processing mechanism; A1 changes only the directional traversal mechanism relative to A0. Their encoder, decoder, skips, data contract, loss, optimizer, scheduler, and run protocol remain shared with the baseline. A1 is an independent ablation, not a stacked adaptation.
 
 All files under `Reference/` remain immutable. The relevant source trees inspected were:
 
@@ -370,9 +370,9 @@ Required invariants:
 - no patch-size reduction;
 - no decoder interface change.
 
-## 3.7 Architecture A implementation record
+## 3.7 Architecture A0 implementation record
 
-The implemented block uses one custom ViL/mLSTM block with the following configuration:
+The corrected A0 implementation uses one custom ViL/mLSTM block with the following configuration:
 
 | Component | Configuration |
 |---|---|
@@ -393,9 +393,56 @@ The implemented block uses one custom ViL/mLSTM block with the following configu
 
 The parallel matrix-memory computation follows the stabilized mLSTM equations in the inspected xLSTM-UNet `vision_lstm.py`. The reference deliberately uses different groupings for the headwise Q/K/V projections and the matrix-LSTM cell: with inner dimension `512` and `qkv_block_size=4`, Q/K/V use `128` groups of width `4`, while the matrix-LSTM uses `4` heads of width `128`. Native PyTorch reshaping, `einsum`, grouped convolution, and normalization replace the reference `einops` and framework-specific imports.
 
-The Architecture A constructor initializes the shared Pure U-Net modules first and attaches the additional ViL/mLSTM processor afterward. This preserves the exact Pure U-Net parameter initialization under a shared seed; the processor consumes only subsequent random draws. Corresponding Pure U-Net parameters are required to match exactly under seed `42`.
+The A0 constructor initializes the shared Pure U-Net modules first and attaches the additional ViL/mLSTM processor afterward. This preserves the exact Pure U-Net parameter initialization under a shared seed; the processor consumes only subsequent random draws. Corresponding Pure U-Net parameters match exactly under seed `42`.
 
-Architecture A passed the bounded CPU sanity path and focused unit tests. It has not been trained for the full 100-epoch experiment.
+A0 passed the bounded CPU sanity path and focused unit tests. Its corrected full 100-epoch Colab experiment completed with the best validation-Dice checkpoint at epoch `51`.
+
+### A0 completed result
+
+| Quantity | Recorded value |
+|---|---:|
+| Best validation Dice | `0.8005566217` at epoch 51 |
+| Test Dice | `0.8175639115` |
+| Test IoU | `0.7270158563` |
+| Test precision | `0.8651886918` |
+| Test recall | `0.8180166952` |
+
+A0 is frozen. The earlier incorrect-head, initialization-confounded epoch-78 run remains historical and incomplete; it is not a valid A0 result.
+
+## 3.8 Architecture A1: alternating bidirectional bottleneck ablation
+
+A1 is introduced before Architecture B to test whether the spatial traversal mechanism affects the bottleneck result. It is an independent controlled ablation of frozen A0, not an additional layer stacked on top of A0.
+
+The external tensor contract is unchanged:
+
+```text
+[B,256,14,14]
+→ [B,196,256]
+→ alternating ViL/mLSTM pair
+→ [B,196,256]
+→ [B,256,14,14]
+```
+
+For each A1 pair, let `X` be the row-major token sequence. The first block processes the original order:
+
+```text
+Y_forward = Block_top_left_to_bottom_right(X)
+```
+
+The second, independently parameterized block processes the reverse order and is then aligned back to the original spatial positions:
+
+```text
+Y_reverse = flip(
+    Block_bottom_right_to_top_left(flip(Y_forward, sequence_dimension)),
+    sequence_dimension
+)
+```
+
+The pair output is `Y_reverse`. This is sequential composition, matching the cited Vision-LSTM `ViLBlockPair`; it is not averaging, concatenation, or parameter sharing. Each block retains its own pre-normalized residual, causal mLSTM, internal learnable skip, gating, and output projection. Both directions therefore have embedding dimension `256`, internal projection dimension `512`, Q/K/V grouping `128 x 4`, and matrix-LSTM grouping `4 x 128`. Positional encoding and patch embedding remain excluded.
+
+The reverse flip is applied before the second block and undone immediately afterward, so every output token remains aligned with its original `(row, column)` location before restoration to `[B,256,14,14]`. With one independent directional pair, the derived A1 parameter count is `4,814,945 + 2 x 415,496 = 5,645,937`.
+
+The A1 pair mechanism is source-derived from the Vision-LSTM `ViLBlockPair` and its explicit top-left/bottom-right traversal. The use of that pair at the existing xLSTM-UNet-pattern bottleneck, while retaining the project’s causal 1-D convolution and all A0 controls, is a project-specific engineering adaptation.
 
 # 4. Multi-stage ViL
 
@@ -605,9 +652,10 @@ No benchmark memory number is asserted in this specification.
 | Model | Trainable parameters | Difference from Pure U-Net |
 |---|---:|---:|
 | Pure U-Net | `4,814,945` | — |
-| Architecture A: Pure U-Net + one ViL/mLSTM bottleneck block | `5,230,441` | `+415,496` |
+| Architecture A0: Pure U-Net + one ViL/mLSTM bottleneck block | `5,230,441` | `+415,496` |
+| Architecture A1: Pure U-Net + one independent alternating ViL/mLSTM pair | `5,645,937` | `+830,992` |
 
-The increase is entirely attributable to the project-local bottleneck block. No parameter matching was imposed. The Architecture A sanity configuration uses batch size 1 only as a bounded diagnostic; the full experiment configuration preserves the approved batch size 4. The earlier `5,611,617` count described the superseded 128-head matrix-LSTM implementation and is not a result for the corrected Architecture A.
+The increases are attributable to the project-local bottleneck processors. No parameter matching was imposed. A0 and A1 sanity configurations use batch size 1 only as bounded diagnostics; their full experiment configurations preserve the approved batch size 4. The earlier `5,611,617` count described the superseded 128-head matrix-LSTM implementation and is not a result for A0 or A1.
 
 # 7. Fair comparison
 
@@ -712,7 +760,7 @@ The following details were subsequently frozen in `BASELINE_SPECIFICATION_V1.md`
 - exact input resize/aspect-ratio policy;
 - loss and optimizer.
 
-Architecture A is now the implemented next comparison target; only its bounded sanity checks have been run, not the full 100-epoch experiment.
+Corrected A0 is frozen after its completed 100-epoch experiment. A1 is implemented and bounded-sanity validated; its full experiment remains pending. Architecture B remains deferred until the traversal ablation is evaluated.
 
 Classification: **DIRECT SOURCE SUPPORT** for the first-model ordering; the concrete Pure U-Net and Architecture A project choices are **ENGINEERING CHOICES** recorded in the baseline and implementation configurations.
 
@@ -781,7 +829,7 @@ Evidence needed: a project design decision; no reference implementation fixes th
 ## ViL
 
 - The first ViL implementation is resolved as the custom xLSTM-UNet block adapted into project-local native PyTorch code; future alternative blocks remain open.
-- Architecture A uses one custom ViL/mLSTM block at the bottleneck; stacking is a future experiment.
+- Corrected A0 uses one custom ViL/mLSTM block at the bottleneck. A1 uses one independent alternating directional pair at the same bottleneck; it is not A0 stacked with another adaptation.
 - Stochastic depth is disabled for Architecture A; later regularization remains open.
 - The current adapter promotes float16/bfloat16 inputs to float32 for numerical stability; a later mixed-precision design remains open.
 - Positional encoding is omitted from Architecture A; adding it is a separate ablation.
