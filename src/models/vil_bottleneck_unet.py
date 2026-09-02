@@ -47,7 +47,7 @@ class ResidualLayerNorm(nn.Module):
 
 
 class HeadwiseLinear(nn.Module):
-    """Independent square linear projections for each mLSTM head."""
+    """Independent square linear projections for each Q/K/V headwise group."""
 
     def __init__(self, dim: int, num_heads: int, bias: bool = False) -> None:
         super().__init__()
@@ -176,6 +176,7 @@ class MatrixLSTMCell(nn.Module):
             raise ValueError(f"dim must be divisible by num_heads, got {dim}, {num_heads}")
         self.dim = int(dim)
         self.num_heads = int(num_heads)
+        self.head_dim = self.dim // self.num_heads
         self.eps = float(eps)
         self.input_gate = nn.Linear(3 * dim, num_heads)
         self.forget_gate = nn.Linear(3 * dim, num_heads)
@@ -244,14 +245,21 @@ class ViLMLSTMBlock(nn.Module):
             )
         self.dim = int(dim)
         self.inner_dim = inner_dim
-        self.num_heads = inner_dim // int(qkv_block_size)
+        self.qkv_block_size = int(qkv_block_size)
+        # The reference uses two distinct groupings of the same expanded
+        # embedding: Q/K/V projections use 128 groups of width 4 here, while
+        # the matrix-LSTM cell uses 4 heads of width 128.
+        self.qkv_num_heads = inner_dim // self.qkv_block_size
+        self.qkv_head_dim = self.qkv_block_size
+        self.mlstm_num_heads = self.qkv_block_size
+        self.mlstm_head_dim = inner_dim // self.mlstm_num_heads
         self.norm = ResidualLayerNorm(dim, eps=norm_eps)
         self.proj_up = nn.Linear(dim, 2 * inner_dim, bias=proj_bias)
-        self.q_proj = HeadwiseLinear(inner_dim, self.num_heads, bias=proj_bias)
-        self.k_proj = HeadwiseLinear(inner_dim, self.num_heads, bias=proj_bias)
-        self.v_proj = HeadwiseLinear(inner_dim, self.num_heads, bias=proj_bias)
+        self.q_proj = HeadwiseLinear(inner_dim, self.qkv_num_heads, bias=proj_bias)
+        self.k_proj = HeadwiseLinear(inner_dim, self.qkv_num_heads, bias=proj_bias)
+        self.v_proj = HeadwiseLinear(inner_dim, self.qkv_num_heads, bias=proj_bias)
         self.conv1d = CausalDepthwiseConv1d(inner_dim, conv_kernel_size, bias=conv_bias)
-        self.mlstm = MatrixLSTMCell(inner_dim, self.num_heads)
+        self.mlstm = MatrixLSTMCell(inner_dim, self.mlstm_num_heads)
         self.learnable_skip = nn.Parameter(torch.ones(inner_dim))
         self.proj_down = nn.Linear(inner_dim, dim, bias=proj_bias)
         self.reset_parameters()
@@ -348,14 +356,19 @@ class ViLBottleneckUNet(PureUNet):
         vil_bottleneck: dict | None = None,
     ) -> None:
         vil_config = dict(vil_bottleneck or {})
-        processor = ViLMLSTMBottleneck(channels=int(features[-1]), **vil_config)
+        # Initialize the shared U-Net first.  This preserves the exact Pure
+        # U-Net RNG draw order under a shared seed; the additional processor
+        # is initialized afterward from the subsequent RNG state.
         super().__init__(
             in_channels=in_channels,
             out_channels=out_channels,
             features=features,
             negative_slope=negative_slope,
             instance_norm_eps=instance_norm_eps,
-            bottleneck_processor=processor,
+            bottleneck_processor=None,
+        )
+        self.bottleneck_processor = ViLMLSTMBottleneck(
+            channels=int(features[-1]), **vil_config
         )
 
 

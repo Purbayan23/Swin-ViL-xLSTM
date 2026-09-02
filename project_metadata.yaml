@@ -55,10 +55,13 @@ architecture_a:
   block_depth: 1
   internal_expansion: 2
   internal_dimension: 512
-  mLSTM_heads: 128
-  mLSTM_head_dimension: 4
-  parameters: 5611617
-  parameter_increase_over_pure_unet: 796672
+  qkv_heads: 128
+  qkv_head_dimension: 4
+  mLSTM_heads: 4
+  mLSTM_head_dimension: 128
+  parameters: 5230441
+  parameter_increase_over_pure_unet: 415496
+  initialization_policy: "initialize shared Pure U-Net modules first, then attach the independently initialized ViL/mLSTM processor; corresponding CNN parameters must match under seed 42"
   additional_dependencies: "none; native PyTorch implementation"
   reference_pattern: "xLSTM-UNet UxLSTMBot_2d.py and vision_lstm.py"
   full_training_status: "not_run"

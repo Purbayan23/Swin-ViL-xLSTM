@@ -80,6 +80,15 @@ def main() -> int:
         lr=float(config["optimizer"]["learning_rate"]),
         weight_decay=float(config["optimizer"]["weight_decay"]),
     )
+    trainable_parameter_ids = {
+        id(parameter) for parameter in model.parameters() if parameter.requires_grad
+    }
+    optimizer_parameter_ids = {
+        id(parameter)
+        for parameter_group in optimizer.param_groups
+        for parameter in parameter_group["params"]
+    }
+    assert trainable_parameter_ids.issubset(optimizer_parameter_ids)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=int(config["scheduler"]["t_max"]),
@@ -116,6 +125,7 @@ def main() -> int:
             break
     scheduler.step()
     stepped_lr = scheduler.get_last_lr()[0]
+    assert torch.isfinite(torch.tensor(stepped_lr)).item()
     checkpoint_path = project_path(config, config["sanity"]["checkpoint_path"])
     save_checkpoint(
         checkpoint_path,

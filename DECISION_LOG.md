@@ -136,8 +136,19 @@ Dates use the project date available when each entry was recorded. Initializatio
 - Date: 2026-09-03
 - Decision: Implement Architecture A as a project-local, sequence-level ViL/mLSTM bottleneck while changing no component of the frozen Pure U-Net pipeline outside the bottleneck feature processor.
 - Rationale: The xLSTM-UNet 2D bottleneck wrapper directly provides the required feature-map-to-sequence-to-feature-map integration. The complete official VisionLSTM2 model is not a drop-in block because it includes image patch embedding, positional embedding, and an alternating block-pair backbone.
-- Implementation: `[B,256,14,14] -> [B,196,256] -> one top-left-to-bottom-right ViL/mLSTM block -> [B,196,256] -> [B,256,14,14]`, with internal expansion 2, 128 heads of dimension 4, causal depthwise kernel size 4, residual path, and no patch or positional embedding.
+- Initial implementation record (head semantics superseded by D-018): `[B,256,14,14] -> [B,196,256] -> one top-left-to-bottom-right ViL/mLSTM block -> [B,196,256] -> [B,256,14,14]`, with internal expansion 2, the then-used 128-head matrix-LSTM grouping, causal depthwise kernel size 4, residual path, and no patch or positional embedding.
 - Evidence: `ARCHITECTURE_SPECIFICATION_V1.md`; `Reference/repositories/xLSTM-UNet-PyTorch-main/UxLSTM/nnunetv2/nets/UxLSTMBot_2d.py`; `Reference/repositories/xLSTM-UNet-PyTorch-main/UxLSTM/nnunetv2/nets/vision_lstm.py`; cited Vision-LSTM and xLSTM-UNet papers; bounded CPU sanity and focused unit tests.
-- Parameter effect: Pure U-Net `4,814,945`; Architecture A `5,611,617`; increase `796,672`. The difference is recorded as an experimental factor and is not parameter-matched.
+- Historical parameter effect before the D-018 correction: Pure U-Net `4,814,945`; Architecture A `5,611,617`; increase `796,672`. This superseded implementation was not treated as a completed experiment.
 - Dependencies: Native PyTorch implementation; no `einops`, torchvision, nnU-Net, dynamic-network-architectures, compiled extension, or package installation required.
-- Status: Implemented and bounded-sanity validated on CPU; CUDA path remains to be exercised in Colab; full Architecture A training has not been run.
+- Status: Initial implementation record retained for chronology; superseded in part by D-018. Full Architecture A training has not been run.
+
+## D-018 - Correct Architecture A head semantics and initialization control
+
+- Date: 2026-09-03
+- Decision: Correct the project-local Architecture A adapter to preserve the cited xLSTM-UNet grouping: Q/K/V projections use `128` heads of dimension `4`, while the matrix-LSTM cell uses `4` heads of dimension `128` for the expanded dimension `512`.
+- Rationale: The reference `vision_lstm.py` computes Q/K/V projection heads as `inner_dim // qkv_block_size` but constructs `MatrixLSTMCell(..., num_heads=qkv_block_size)`. The previous implementation reused the Q/K/V head count for the matrix-LSTM cell and therefore did not reproduce the cited semantics.
+- Initialization policy: Construct the shared Pure U-Net superclass first, then attach the additional ViL/mLSTM processor. This preserves the exact Pure U-Net CNN parameter initialization under seed `42`; the processor consumes subsequent random draws independently.
+- Parameter effect: Corrected Architecture A has `5,230,441` parameters, consisting of the Pure U-Net `4,814,945` plus `415,496` processor parameters.
+- Scope: Dataset, preprocessing, split, traversal, causal 1-D convolution, decoder, loss, optimizer, scheduler, batch size, epoch budget, seed, checkpoint rule, and prediction threshold are unchanged. The interrupted epoch-78 training history/checkpoint metadata is historical and is not reclassified as a completed experiment.
+- Evidence: Reference `xLSTM-UNet-PyTorch-main/UxLSTM/nnunetv2/nets/vision_lstm.py`; corrected project implementation; focused CPU tests and bounded CPU sanity test.
+- Status: Corrected implementation; full Architecture A training remains not run.

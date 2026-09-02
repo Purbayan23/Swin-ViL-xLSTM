@@ -378,10 +378,11 @@ The implemented block uses one custom ViL/mLSTM block with the following configu
 |---|---|
 | External input/output | `[B,256,14,14]` |
 | Sequence length | `196` |
-| External embedding dimension | `256` |
+| External/token embedding dimension | `256` |
 | Block depth | `1` |
-| Internal expansion | `2`, giving inner dimension `512` |
-| mLSTM head block size | `4`, giving `128` heads of dimension `4` |
+| Internal projection dimension | `512` from expansion `2` |
+| Q/K/V projection grouping | `128` heads of dimension `4` |
+| Matrix-LSTM grouping | `4` heads of dimension `128` |
 | Local context convolution | causal depthwise 1-D convolution, kernel size `4` |
 | Traversal | one top-left-to-bottom-right row-major sequence |
 | Normalization | residual-weight LayerNorm before the block; per-head output normalization |
@@ -390,7 +391,9 @@ The implemented block uses one custom ViL/mLSTM block with the following configu
 | Stochastic depth | disabled |
 | Positional/patch embedding | none |
 
-The parallel matrix-memory computation follows the stabilized mLSTM equations in the inspected xLSTM-UNet `vision_lstm.py`. Native PyTorch reshaping, `einsum`, grouped convolution, and normalization replace the reference `einops` and framework-specific imports.
+The parallel matrix-memory computation follows the stabilized mLSTM equations in the inspected xLSTM-UNet `vision_lstm.py`. The reference deliberately uses different groupings for the headwise Q/K/V projections and the matrix-LSTM cell: with inner dimension `512` and `qkv_block_size=4`, Q/K/V use `128` groups of width `4`, while the matrix-LSTM uses `4` heads of width `128`. Native PyTorch reshaping, `einsum`, grouped convolution, and normalization replace the reference `einops` and framework-specific imports.
+
+The Architecture A constructor initializes the shared Pure U-Net modules first and attaches the additional ViL/mLSTM processor afterward. This preserves the exact Pure U-Net parameter initialization under a shared seed; the processor consumes only subsequent random draws. Corresponding Pure U-Net parameters are required to match exactly under seed `42`.
 
 Architecture A passed the bounded CPU sanity path and focused unit tests. It has not been trained for the full 100-epoch experiment.
 
@@ -602,9 +605,9 @@ No benchmark memory number is asserted in this specification.
 | Model | Trainable parameters | Difference from Pure U-Net |
 |---|---:|---:|
 | Pure U-Net | `4,814,945` | — |
-| Architecture A: Pure U-Net + one ViL/mLSTM bottleneck block | `5,611,617` | `+796,672` |
+| Architecture A: Pure U-Net + one ViL/mLSTM bottleneck block | `5,230,441` | `+415,496` |
 
-The increase is entirely attributable to the project-local bottleneck block. No parameter matching was imposed. The Architecture A sanity configuration uses batch size 1 only as a bounded diagnostic; the full experiment configuration preserves the approved batch size 4.
+The increase is entirely attributable to the project-local bottleneck block. No parameter matching was imposed. The Architecture A sanity configuration uses batch size 1 only as a bounded diagnostic; the full experiment configuration preserves the approved batch size 4. The earlier `5,611,617` count described the superseded 128-head matrix-LSTM implementation and is not a result for the corrected Architecture A.
 
 # 7. Fair comparison
 
