@@ -169,3 +169,13 @@ Dates use the project date available when each entry was recorded. Initializatio
 - Definition: A1 applies two independently parameterized blocks sequentially. The reverse-direction block receives a sequence flip, processes left-to-right, and its output is flipped back to original token positions before restoration. No averaging, concatenation, positional encoding, or patch embedding is added.
 - Parameters: Q/K/V use `128` heads of dimension `4`; each matrix-LSTM uses `4` heads of dimension `128`; one directional pair gives a derived total of `5,645,937` parameters.
 - Status: A1 implementation and bounded CPU sanity validation passed; full A1 training has not started.
+
+## D-021 - Record failed A1 run and defer numerical mitigation
+
+- Date: 2026-09-03
+- Decision: Record the first full A1 run as failed/incomplete and do not change the architecture or training protocol while investigating its numerical stability.
+- Result: The run was normal through epoch 26 and produced `NaN` training/validation loss at epoch 27. Dice and IoU were zero afterward. The best validation Dice before failure was `0.693657` at epoch 15. The run is not a valid scientific result; historical log/checkpoint metadata is retained.
+- Read-only finding: In the current shared mLSTM implementation, `torch.exp(-max_log_decay)` can overflow in float32 when `max_log_decay < -88.722839`. A controlled stress case produced finite forward output/loss, then non-finite input-gate gradients, followed by non-finite AdamW state and parameters. This hazard is present in A0 as well; A1’s additional reverse block may encounter it first, but the remote epoch-27 first operation is unconfirmed because the failed state was not available locally.
+- Local evidence: Seed-42 real-data A1/A0 stage traces and a bounded fixed-batch A1 trace remained finite. Causal-mask `-inf` values were expected. No clipping, epsilon, precision, learning-rate, architecture, optimizer, or protocol change was introduced.
+- Next evidence required: Instrumented replay from the retained epoch-26 Colab state, if available, logging mLSTM gate ranges, `max_log_decay`, the normalizer exponential, gradients, parameters, and optimizer state.
+- Status: A1 failed/incomplete; no valid A1 result; Architecture B remains deferred.

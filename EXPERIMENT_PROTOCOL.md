@@ -8,6 +8,10 @@ The corrected single-direction bottleneck comparison is **Architecture A0**. It 
 
 The current experiment is **Architecture A1: Pure U-Net + alternating bidirectional ViL/mLSTM bottleneck**. A1 is an independent controlled ablation of frozen A0 introduced before Architecture B to test whether spatial sequence traversal affects the bottleneck result. It retains the same `[B,256,14,14] -> [B,196,256] -> [B,196,256] -> [B,256,14,14]` contract and all A0 controls, with no positional encoding or patch embedding. It follows the cited Vision-LSTM `ViLBlockPair`: an independent top-left-to-bottom-right block is followed by an independent bottom-right-to-top-left block, implemented by flipping the sequence before the second block and flipping its output back for spatial alignment. Outputs are composed sequentially, not averaged or concatenated.
 
+The first full A1 run failed at epoch 27: training and validation losses became `NaN`, with Dice/IoU reported as zero afterward. The best validation Dice before failure was `0.693657` at epoch 15. This is a failed/incomplete run, not a valid experiment result, and the A1 architecture and training protocol remain unchanged pending numerical-stability replay.
+
+Read-only inspection of the current code identified a shared mLSTM hazard at `torch.exp(-max_log_decay)`, which can overflow in float32 for `max_log_decay < -88.722839`. A controlled stress case showed finite forward output/loss, then non-finite gradients, followed by non-finite AdamW state and parameters. The exact first operation in the remote epoch-27 state remains unconfirmed because that checkpoint was not available locally. No mitigation has been adopted.
+
 ## Data
 
 - Primary dataset: Kvasir-SEG.

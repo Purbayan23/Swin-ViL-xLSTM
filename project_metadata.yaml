@@ -1,5 +1,5 @@
 project_name: "Project_ViL"
-project_status: "pure_unet_baseline_a0_completed_a1_current"
+project_status: "pure_unet_baseline_a0_completed_a1_failed_stability_investigation"
 implementation_status: "pure_unet_baseline_a0_completed_a1_implemented"
 research_question: "How does Vision-LSTM-based feature processing compare with CNN and Swin Transformer feature processing within a lightweight U-Net framework for 2D medical-image segmentation?"
 primary_dataset:
@@ -75,7 +75,7 @@ architecture_a:
   historical_incomplete_run: "incorrect-head and initialization-confounded epoch-78 run; not a valid result"
 architecture_a1:
   name: "Architecture A1: Pure U-Net + alternating/bidirectional ViL/mLSTM bottleneck"
-  status: "implemented_bounded_cpu_sanity_passed_full_training_not_run"
+  status: "implemented_bounded_cpu_sanity_passed_full_run_failed_epoch_27"
   purpose: "independent traversal ablation of frozen A0 before Architecture B"
   model_config: "configs/vil_bottleneck_a1.json"
   sanity_config: "configs/sanity_vil_bottleneck_a1.json"
@@ -95,8 +95,23 @@ architecture_a1:
   positional_encoding: false
   patch_embedding: false
   parameters: 5645937
-  full_training_status: "not_run"
+  full_training_status: "failed_at_epoch_27_not_valid_result"
   bounded_sanity_status: "passed_cpu"
+  failure:
+    epoch: 27
+    train_loss: "NaN"
+    validation_loss: "NaN"
+    dice_iou_after_failure: 0
+    best_validation_dice_before_failure: 0.693657
+    best_validation_epoch_before_failure: 15
+    historical_metadata_retained: true
+  numerical_stability_investigation:
+    status: "read_only_completed_remote_first_operation_unconfirmed"
+    identified_shared_hazard: "torch.exp(-max_log_decay) can overflow in float32 when max_log_decay < -88.722839"
+    controlled_failure_order: "finite forward/loss -> non-finite gradients -> non-finite AdamW state and parameters"
+    local_seed42_trace: "A0 and A1 initial real-data traces finite; bounded fixed-batch A1 trace did not reproduce failure"
+    mitigation_applied: false
+    next_evidence: "instrumented replay from retained epoch-26 Colab state, if available"
 computational_scope:
   target: "basic laptop and Google Colab"
   initial_scope: "lightweight 2D experiments"
@@ -198,6 +213,6 @@ baseline_mask_preprocessing:
 unresolved_decisions:
   - "Exact Kvasir-SEG release/version identifier: TBD"
   - "Aspect-ratio-preserving preprocessing: future controlled experiment"
-  - "A1 implementation and bounded validation: current task; positional encoding remains excluded until optional A2"
+  - "A1 numerical-stability localization after epoch-27 failure; no mitigation or protocol change approved"
   - "Exact lightweight Swin configuration: TBD"
   - "Pretrained-weight experiment design: TBD; first controlled comparison is from scratch"

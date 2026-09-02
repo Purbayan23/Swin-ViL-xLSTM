@@ -1,6 +1,6 @@
 # Architecture Specification V1
 
-Status: architecture specification and implementation record. The Pure U-Net baseline and corrected Architecture A0 are complete and frozen. Architecture A1 is the current independent traversal ablation; its implementation and bounded CPU sanity validation are complete, but its full training has not run.
+Status: architecture specification and implementation record. The Pure U-Net baseline and corrected Architecture A0 are complete and frozen. Architecture A1 is the current independent traversal ablation; its implementation and bounded CPU sanity validation are complete, but the first full run failed at epoch 27 and is not a valid completed result. A read-only numerical-stability investigation is recorded below; no architecture or protocol change has been approved.
 
 Date: 2026-09-03
 
@@ -444,6 +444,14 @@ The reverse flip is applied before the second block and undone immediately after
 
 The A1 pair mechanism is source-derived from the Vision-LSTM `ViLBlockPair` and its explicit top-left/bottom-right traversal. The use of that pair at the existing xLSTM-UNet-pattern bottleneck, while retaining the project’s causal 1-D convolution and all A0 controls, is a project-specific engineering adaptation.
 
+## 3.9 A1 numerical-stability incident record
+
+The first full A1 run followed the approved A1 configuration through epoch 26 and then produced `NaN` training and validation losses at epoch 27. Dice and IoU were reported as zero afterward. The best validation Dice observed before failure was `0.693657` at epoch 15. This run is failed/incomplete and must not be used as an experimental result; its historical log/checkpoint metadata is retained.
+
+The failed Colab epoch-26 state was not present in the checked-out project, so the exact first non-finite operation in that remote run could not be conclusively localized. Runtime-only inspection of the current implementation found a latent shared mLSTM hazard in `_parallel_stabilized_mlstm`: `torch.exp(-max_log_decay)` can overflow in float32 when `max_log_decay < -88.722839`. A controlled finite-input stress case produced a finite mLSTM output and finite loss, followed first by non-finite input-gate gradients, then non-finite AdamW state and parameters. The same hazard exists in A0’s single block, but A1 adds a second independently parameterized mLSTM path and may encounter the condition there first; this remains unproven for the failed run.
+
+On the local seed-42 real-data trace, A1 and A0 had finite activations, losses, gradients, parameters, and optimizer states. The causal-mask `-inf` entries were expected masked values. The bounded fixed-batch A1 trace did not reproduce the failure. No clipping, epsilon, precision, learning-rate, architecture, or protocol change was made. The next required evidence is an instrumented replay from the available epoch-26 Colab state, if retained.
+
 # 4. Multi-stage ViL
 
 ## 4.1 Insertion rule
@@ -760,7 +768,7 @@ The following details were subsequently frozen in `BASELINE_SPECIFICATION_V1.md`
 - exact input resize/aspect-ratio policy;
 - loss and optimizer.
 
-Corrected A0 is frozen after its completed 100-epoch experiment. A1 is implemented and bounded-sanity validated; its full experiment remains pending. Architecture B remains deferred until the traversal ablation is evaluated.
+Corrected A0 is frozen after its completed 100-epoch experiment. A1 is implemented and bounded-sanity validated, but its first full experiment failed at epoch 27 and is not a valid result. Architecture B remains deferred until the A1 numerical-stability issue is localized and the traversal ablation can be evaluated validly.
 
 Classification: **DIRECT SOURCE SUPPORT** for the first-model ordering; the concrete Pure U-Net and Architecture A project choices are **ENGINEERING CHOICES** recorded in the baseline and implementation configurations.
 
