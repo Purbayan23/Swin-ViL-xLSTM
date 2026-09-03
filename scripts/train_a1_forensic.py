@@ -219,6 +219,8 @@ class ForensicObserver:
         self.current_details: dict[str, dict[str, Any]] = {}
         self.block_values: dict[str, dict[str, torch.Tensor]] = {}
         self.max_observed: dict[str, dict[str, float | int | None]] = {}
+        self.current_epoch: int | None = None
+        self.epoch_max_observed: dict[str, dict[str, Any]] = {}
         # Warning episodes persist across forward passes.  Each condition is
         # keyed by its scope, statistic, and threshold, so crossing a higher
         # threshold is a new episode even if a lower threshold remains active.
@@ -257,6 +259,16 @@ class ForensicObserver:
         self.last_warning_crossings = []
         self.last_warning_crossing_details = []
         self.current_warning_lifecycle_events = []
+
+    def begin_epoch(self, epoch: int) -> None:
+        self.current_epoch = int(epoch)
+        self.epoch_max_observed = {}
+
+    def _record_epoch_observation(self, key: str, stats: dict[str, Any]) -> None:
+        if self.current_epoch is None:
+            return
+        summary = self.epoch_max_observed.setdefault(key, _summary_template())
+        _merge_scalar_summary(summary, stats)
 
     def _scope_key(self, scope: str, name: str) -> str:
         return f"{scope}/{name}"
@@ -432,6 +444,32 @@ class ForensicObserver:
                 checkpoint_path=str(checkpoint_path),
             )
 
+    def record_optimization_telemetry(
+        self,
+        *,
+        gradients: dict[str, Any],
+        parameters_before: dict[str, Any],
+        parameters_after: dict[str, Any],
+        optimizer_before: dict[str, Any],
+        optimizer_after: dict[str, Any],
+    ) -> None:
+        """Add scalar optimization summaries to the current epoch only."""
+
+        summaries = {
+            "optimization/gradient": gradients,
+            "optimization/parameters_before_step": parameters_before,
+            "optimization/parameters_after_step": parameters_after,
+            "optimization/adamw_exp_avg_before_step": optimizer_before["exp_avg"],
+            "optimization/adamw_exp_avg_sq_before_step": optimizer_before["exp_avg_sq"],
+            "optimization/adamw_exp_avg_after_step": optimizer_after["exp_avg"],
+            "optimization/adamw_exp_avg_sq_after_step": optimizer_after["exp_avg_sq"],
+        }
+        for key, summary in summaries.items():
+            self._record_epoch_observation(key, summary)
+
+    def epoch_summary(self) -> dict[str, dict[str, Any]]:
+        return copy.deepcopy(self.epoch_max_observed)
+
     def record(
         self,
         scope: str,
@@ -469,6 +507,7 @@ class ForensicObserver:
             maximums[f"{field}_max"] = max(
                 int(maximums[f"{field}_max"] or 0), int(stats[field])
             )
+        self._record_epoch_observation(key, stats)
         self._warning_check(scope, name, stats)
         if stats["unexpected_nonfinite"]:
             raise ForensicFailure(
@@ -642,6 +681,108 @@ class ForensicObserver:
         self.current_details = {}
         self.block_values = {}
         self.current_warning_lifecycle_events = []
+
+
+class CheckpointBudget:
+    """Bound ordinary forensic checkpoint files without suppressing failure saves."""
+
+    def __init__(
+        self,
+        *,
+        max_warning_checkpoints: int,
+        max_total_checkpoints: int,
+        event_sink: Any | None = None,
+    ) -> None:
+        if max_warning_checkpoints < 0:
+            raise ValueError("max_warning_checkpoints must be non-negative")
+        if max_total_checkpoints < 0:
+            raise ValueError("max_total_checkpoints must be non-negative")
+        self.max_warning_checkpoints = int(max_warning_checkpoints)
+        self.max_total_checkpoints = int(max_total_checkpoints)
+        self.warning_checkpoints_saved = 0
+        self._ordinary_paths: set[str] = set()
+        self._exhausted_reasons: set[str] = set()
+        self.event_sink = event_sink
+
+    @property
+    def ordinary_checkpoints_saved(self) -> int:
+        return len(self._ordinary_paths)
+
+    @property
+    def warning_budget_exhausted(self) -> bool:
+        return self.warning_checkpoints_saved >= self.max_warning_checkpoints
+
+    @property
+    def total_budget_exhausted(self) -> bool:
+        return self.ordinary_checkpoints_saved >= self.max_total_checkpoints
+
+    def _path_key(self, path: Path | str) -> str:
+        return str(Path(path).resolve())
+
+    def _emit_exhausted(
+        self,
+        *,
+        reason: str,
+        checkpoint_kind: str,
+        context: dict[str, Any] | None,
+    ) -> None:
+        if reason in self._exhausted_reasons:
+            return
+        self._exhausted_reasons.add(reason)
+        event = {
+            "event_type": "checkpoint_budget_exhausted",
+            "budget": reason,
+            "checkpoint_kind": checkpoint_kind,
+            "max_warning_checkpoints": self.max_warning_checkpoints,
+            "max_total_checkpoints": self.max_total_checkpoints,
+            "warning_checkpoints_saved": self.warning_checkpoints_saved,
+            "ordinary_checkpoints_saved": self.ordinary_checkpoints_saved,
+            **(context or {}),
+        }
+        if self.event_sink is not None:
+            self.event_sink(event)
+
+    def can_save(
+        self,
+        *,
+        checkpoint_kind: str,
+        path: Path | str,
+        context: dict[str, Any] | None = None,
+    ) -> bool:
+        path_key = self._path_key(path)
+        if checkpoint_kind == "warning" and self.warning_budget_exhausted:
+            self._emit_exhausted(
+                reason="warning_checkpoints",
+                checkpoint_kind=checkpoint_kind,
+                context=context,
+            )
+            return False
+        # Rewriting best.pt does not consume another ordinary file slot.
+        if path_key not in self._ordinary_paths and self.total_budget_exhausted:
+            self._emit_exhausted(
+                reason="total_checkpoints",
+                checkpoint_kind=checkpoint_kind,
+                context=context,
+            )
+            return False
+        return True
+
+    def record_saved(self, *, checkpoint_kind: str, path: Path | str) -> None:
+        path_key = self._path_key(path)
+        if path_key not in self._ordinary_paths:
+            self._ordinary_paths.add(path_key)
+        if checkpoint_kind == "warning":
+            self.warning_checkpoints_saved += 1
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "max_warning_checkpoints": self.max_warning_checkpoints,
+            "max_total_checkpoints": self.max_total_checkpoints,
+            "warning_checkpoints_saved": self.warning_checkpoints_saved,
+            "ordinary_checkpoints_saved": self.ordinary_checkpoints_saved,
+            "warning_budget_exhausted": self.warning_budget_exhausted,
+            "total_budget_exhausted": self.total_budget_exhausted,
+        }
 
 
 _ACTIVE_OBSERVER: ForensicObserver | None = None
@@ -906,62 +1047,256 @@ def scalar_loss_components(
         )
 
 
-def gradient_summary(model: nn.Module) -> dict[str, Any]:
-    total_squared = 0.0
-    max_abs = 0.0
-    nan_parameters = 0
-    inf_parameters = 0
-    first_nonfinite: dict[str, Any] | None = None
-    for name, parameter in model.named_parameters():
-        if parameter.grad is None:
-            continue
-        grad = parameter.grad.detach()
-        stats = tensor_stats(grad)
-        if stats["min"] is not None:
-            total_squared += float((grad.to(torch.float64) ** 2).sum().item())
-            max_abs = max(max_abs, float(stats["abs_max"] or 0.0))
-        if stats["num_nan"]:
-            nan_parameters += 1
-        if stats["num_pos_inf"] or stats["num_neg_inf"]:
-            inf_parameters += 1
-        if stats["unexpected_nonfinite"] and first_nonfinite is None:
-            first_nonfinite = {"parameter_name": name, "stats": stats}
+def _merge_scalar_summary(
+    destination: dict[str, Any],
+    source: dict[str, Any],
+) -> None:
+    """Merge scalar tensor/optimization statistics without retaining tensors."""
+
+    for field in ("abs_max", "max"):
+        value = source.get(field)
+        if value is not None:
+            previous = destination.get(field)
+            destination[field] = float(value) if previous is None else max(float(previous), float(value))
+    value = source.get("min")
+    if value is not None:
+        previous = destination.get("min")
+        destination["min"] = float(value) if previous is None else min(float(previous), float(value))
+    for field in (
+        "num_nan",
+        "num_pos_inf",
+        "num_neg_inf",
+        "unexpected_nonfinite",
+        "nonfinite_elements",
+        "parameter_count",
+        "state_tensor_count",
+        "state_tensors_with_nonfinite",
+    ):
+        value = source.get(field)
+        if value is not None:
+            destination[field] = int(destination.get(field, 0)) + int(value)
+    for field in (
+        "parameter_name_with_max_abs",
+        "state_name_with_max_abs",
+        "first_nonfinite",
+    ):
+        if destination.get(field) is None and source.get(field) is not None:
+            destination[field] = source[field]
+
+
+def _summary_template() -> dict[str, Any]:
     return {
-        "l2_norm": math.sqrt(total_squared),
-        "max_abs": max_abs,
-        "parameters_with_nan": nan_parameters,
-        "parameters_with_inf": inf_parameters,
-        "first_nonfinite": first_nonfinite,
+        "abs_max": None,
+        "max": None,
+        "min": None,
+        "num_nan": 0,
+        "num_pos_inf": 0,
+        "num_neg_inf": 0,
+        "unexpected_nonfinite": 0,
     }
 
 
-def parameter_finiteness(model: nn.Module) -> dict[str, Any] | None:
-    for name, parameter in model.named_parameters():
-        stats = tensor_stats(parameter.detach())
+def _named_tensor_summary(
+    named_tensors: list[tuple[str, torch.Tensor]],
+    *,
+    include_l2: bool = False,
+) -> dict[str, Any]:
+    summary = _summary_template()
+    summary.update(
+        {
+            "l2_norm": 0.0 if include_l2 else None,
+            "parameter_count": 0,
+            "nonfinite_elements": 0,
+            "parameters_with_nonfinite": 0,
+            "parameter_name_with_max_abs": None,
+            "first_nonfinite": None,
+        }
+    )
+    total_squared = 0.0
+    for name, tensor in named_tensors:
+        stats = tensor_stats(tensor)
+        previous_abs_max = summary["abs_max"]
+        summary["parameter_count"] += 1
+        _merge_scalar_summary(summary, stats)
+        summary["nonfinite_elements"] += int(stats["unexpected_nonfinite"])
         if stats["unexpected_nonfinite"]:
-            return {"parameter_name": name, "stats": stats}
-    return None
+            summary["parameters_with_nonfinite"] += 1
+            if summary["first_nonfinite"] is None:
+                summary["first_nonfinite"] = {"parameter_name": name, "stats": stats}
+        if stats["abs_max"] is not None and (
+            previous_abs_max is None or float(stats["abs_max"]) > float(previous_abs_max)
+        ):
+            summary["parameter_name_with_max_abs"] = name
+        if include_l2:
+            finite_tensor = tensor.detach()
+            if finite_tensor.is_floating_point():
+                finite_tensor = finite_tensor[torch.isfinite(finite_tensor)]
+            if finite_tensor.numel():
+                total_squared += float((finite_tensor.to(torch.float64) ** 2).sum().item())
+    if include_l2:
+        summary["l2_norm"] = math.sqrt(total_squared)
+    summary["has_nan"] = bool(summary["num_nan"])
+    summary["has_pos_inf"] = bool(summary["num_pos_inf"])
+    summary["has_neg_inf"] = bool(summary["num_neg_inf"])
+    summary["has_inf"] = bool(summary["num_pos_inf"] or summary["num_neg_inf"])
+    return summary
+
+
+def gradient_summary(model: nn.Module) -> dict[str, Any]:
+    named_gradients = [
+        (name, parameter.grad.detach())
+        for name, parameter in model.named_parameters()
+        if parameter.grad is not None
+    ]
+    summary = _named_tensor_summary(named_gradients, include_l2=True)
+    summary["max_abs"] = summary["abs_max"] or 0.0
+    summary["parameters_with_nan"] = sum(
+        1
+        for name, tensor in named_gradients
+        if tensor_stats(tensor)["num_nan"]
+    )
+    summary["parameters_with_inf"] = sum(
+        1
+        for name, tensor in named_gradients
+        if tensor_stats(tensor)["num_pos_inf"] or tensor_stats(tensor)["num_neg_inf"]
+    )
+    return summary
+
+
+def parameter_summary(model: nn.Module) -> dict[str, Any]:
+    named_parameters = [(name, parameter.detach()) for name, parameter in model.named_parameters()]
+    summary = _named_tensor_summary(named_parameters)
+    summary["max_abs"] = summary["abs_max"] or 0.0
+    return summary
+
+
+def parameter_finiteness(model: nn.Module) -> dict[str, Any] | None:
+    summary = parameter_summary(model)
+    return summary["first_nonfinite"]
+
+
+def optimizer_state_summary(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+) -> dict[str, Any]:
+    parameter_names = {id(parameter): name for name, parameter in model.named_parameters()}
+    state_summaries = {
+        "exp_avg": _summary_template(),
+        "exp_avg_sq": _summary_template(),
+    }
+    for state_name in state_summaries:
+        state_summaries[state_name].update(
+            {
+                "state_tensor_count": 0,
+                "state_tensors_with_nonfinite": 0,
+                "parameter_name_with_max_abs": None,
+                "state_name_with_max_abs": state_name,
+                "first_nonfinite": None,
+                "nonfinite_elements": 0,
+            }
+        )
+    for parameter, state in optimizer.state.items():
+        parameter_name = parameter_names.get(id(parameter), "unknown_parameter")
+        for state_name, summary in state_summaries.items():
+            value = state.get(state_name)
+            if value is None or not torch.is_tensor(value):
+                continue
+            stats = tensor_stats(value)
+            previous_abs_max = summary["abs_max"]
+            summary["state_tensor_count"] += 1
+            _merge_scalar_summary(summary, stats)
+            summary["nonfinite_elements"] += int(stats["unexpected_nonfinite"])
+            if stats["unexpected_nonfinite"]:
+                summary["state_tensors_with_nonfinite"] += 1
+                if summary["first_nonfinite"] is None:
+                    summary["first_nonfinite"] = {
+                        "parameter_name": parameter_name,
+                        "state_name": state_name,
+                        "stats": stats,
+                    }
+            if stats["abs_max"] is not None and (
+                previous_abs_max is None or float(stats["abs_max"]) > float(previous_abs_max)
+            ):
+                summary["parameter_name_with_max_abs"] = parameter_name
+    for summary in state_summaries.values():
+        summary["has_nan"] = bool(summary["num_nan"])
+        summary["has_pos_inf"] = bool(summary["num_pos_inf"])
+        summary["has_neg_inf"] = bool(summary["num_neg_inf"])
+        summary["has_inf"] = bool(summary["num_pos_inf"] or summary["num_neg_inf"])
+    return {
+        "has_state": any(
+            summary["state_tensor_count"] for summary in state_summaries.values()
+        ),
+        "exp_avg": state_summaries["exp_avg"],
+        "exp_avg_sq": state_summaries["exp_avg_sq"],
+        "max_exp_avg_abs": state_summaries["exp_avg"]["abs_max"],
+        "max_exp_avg_sq_abs": state_summaries["exp_avg_sq"]["abs_max"],
+        "exp_avg_parameter_name_with_max_abs": state_summaries["exp_avg"][
+            "parameter_name_with_max_abs"
+        ],
+        "exp_avg_sq_parameter_name_with_max_abs": state_summaries["exp_avg_sq"][
+            "parameter_name_with_max_abs"
+        ],
+        "first_nonfinite": next(
+            (
+                summary["first_nonfinite"]
+                for summary in state_summaries.values()
+                if summary["first_nonfinite"] is not None
+            ),
+            None,
+        ),
+        "state_tensors_with_nonfinite": sum(
+            summary["state_tensors_with_nonfinite"] for summary in state_summaries.values()
+        ),
+        "nonfinite_elements": sum(
+            summary["nonfinite_elements"] for summary in state_summaries.values()
+        ),
+    }
 
 
 def optimizer_state_finiteness(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
 ) -> dict[str, Any] | None:
-    parameter_names = {id(parameter): name for name, parameter in model.named_parameters()}
-    for parameter, state in optimizer.state.items():
-        parameter_name = parameter_names.get(id(parameter), "unknown_parameter")
-        for state_name in ("exp_avg", "exp_avg_sq"):
-            value = state.get(state_name)
-            if value is None or not torch.is_tensor(value):
-                continue
-            stats = tensor_stats(value)
-            if stats["unexpected_nonfinite"]:
-                return {
-                    "parameter_name": parameter_name,
-                    "state_name": state_name,
-                    "stats": stats,
-                }
+    return optimizer_state_summary(model, optimizer)["first_nonfinite"]
+
+
+def scheduler_state_finiteness(scheduler: Any) -> dict[str, Any] | None:
+    for name, value in scheduler.state_dict().items():
+        if isinstance(value, float) and not math.isfinite(value):
+            return {"state_name": name, "value": value}
+        if isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                if isinstance(item, float) and not math.isfinite(item):
+                    return {"state_name": f"{name}[{index}]", "value": item}
     return None
+
+
+def classify_failure(failure: ForensicFailure) -> str:
+    classifications = {
+        "forward": "forward_activation",
+        "loss": "loss",
+        "gradient": "gradient",
+        "optimizer_state_before_step": "optimizer_state_before_step",
+        "optimizer_state_after_step": "optimizer_state_after_step",
+        "parameter": (
+            "parameter_before_step"
+            if failure.stage == "before_optimizer_step"
+            else "parameter_after_step"
+        ),
+        "scheduler_state": "scheduler_state",
+    }
+    return classifications.get(failure.phase, "other")
+
+
+def classify_nonfinite_value(stats: dict[str, Any]) -> str:
+    if int(stats.get("num_nan", 0)):
+        return "NaN"
+    if int(stats.get("num_pos_inf", 0)):
+        return "+Inf"
+    if int(stats.get("num_neg_inf", 0)):
+        return "-Inf"
+    return "nonfinite"
 
 
 def compare_nested_tensors(left: Any, right: Any) -> float:
@@ -1217,6 +1552,63 @@ def run_forensic_self_tests() -> dict[str, Any]:
             for filename in ("pre_failure_step.pt", "failure_state.pt")
         ) and (directory_path / "failure_report.json").is_file()
 
+    warning_budget_events: list[dict[str, Any]] = []
+    warning_budget = CheckpointBudget(
+        max_warning_checkpoints=20,
+        max_total_checkpoints=40,
+        event_sink=warning_budget_events.append,
+    )
+    warning_budget_saved = 0
+    for index in range(100):
+        warning_path = f"warning_{index}.pt"
+        if warning_budget.can_save(
+            checkpoint_kind="warning",
+            path=warning_path,
+            context={"epoch": 1, "batch": index, "split": "train"},
+        ):
+            warning_budget.record_saved(checkpoint_kind="warning", path=warning_path)
+            warning_budget_saved += 1
+
+    total_budget_events: list[dict[str, Any]] = []
+    total_budget = CheckpointBudget(
+        max_warning_checkpoints=100,
+        max_total_checkpoints=40,
+        event_sink=total_budget_events.append,
+    )
+    total_budget_saved = 0
+    for index in range(100):
+        regular_path = f"regular_{index}.pt"
+        if total_budget.can_save(
+            checkpoint_kind="regular",
+            path=regular_path,
+            context={"epoch": index + 1, "batch": -1, "split": "epoch"},
+        ):
+            total_budget.record_saved(checkpoint_kind="regular", path=regular_path)
+            total_budget_saved += 1
+
+    monitor_model = nn.Linear(2, 1)
+    monitor_optimizer = torch.optim.AdamW(monitor_model.parameters(), lr=1e-3)
+    monitor_loss = monitor_model(torch.ones(1, 2)).sum()
+    monitor_loss.backward()
+    monitor_gradient = gradient_summary(monitor_model)
+    monitor_parameters_before = parameter_summary(monitor_model)
+    monitor_optimizer_before = optimizer_state_summary(monitor_model, monitor_optimizer)
+    monitor_optimizer.step()
+    monitor_parameters_after = parameter_summary(monitor_model)
+    monitor_optimizer_after = optimizer_state_summary(monitor_model, monitor_optimizer)
+    optimization_monitoring_finite = (
+        not monitor_gradient["has_nan"]
+        and not monitor_gradient["has_inf"]
+        and not monitor_parameters_before["has_nan"]
+        and not monitor_parameters_before["has_inf"]
+        and not monitor_parameters_after["has_nan"]
+        and not monitor_parameters_after["has_inf"]
+        and not monitor_optimizer_after["exp_avg"]["has_nan"]
+        and not monitor_optimizer_after["exp_avg"]["has_inf"]
+        and not monitor_optimizer_after["exp_avg_sq"]["has_nan"]
+        and not monitor_optimizer_after["exp_avg_sq"]["has_inf"]
+    )
+
     results = {
         "below_threshold_no_checkpoint": not below_crossed and not below_detail,
         "first_crossing_one_event": first_crossed and first_detail,
@@ -1249,6 +1641,23 @@ def run_forensic_self_tests() -> dict[str, Any]:
             "warning_checkpoint_saved",
         }.issubset(lifecycle_types),
         "lifecycle_event_fields_present": lifecycle_fields_present,
+        "warning_budget_twenty_of_one_hundred": (
+            warning_budget_saved == 20
+            and len(warning_budget_events) == 1
+            and warning_budget_events[0]["event_type"] == "checkpoint_budget_exhausted"
+        ),
+        "global_budget_caps_ordinary_checkpoints": (
+            total_budget_saved == 40
+            and total_budget.ordinary_checkpoints_saved == 40
+            and len(total_budget_events) == 1
+        ),
+        "optimization_monitoring_finite": optimization_monitoring_finite,
+        "optimization_monitoring_has_scalar_maxima": (
+            monitor_gradient["max_abs"] > 0.0
+            and monitor_gradient["parameter_name_with_max_abs"] is not None
+            and monitor_optimizer_after["max_exp_avg_abs"] is not None
+            and monitor_optimizer_after["max_exp_avg_sq_abs"] is not None
+        ),
         "nonfinite_detection": nonfinite_detected,
         "failure_checkpoint_behavior": failure_checkpoint_behavior,
         "compact_logging_present": "vil" in compact and "warning_crossed" in compact,
@@ -1389,9 +1798,27 @@ def record_loss(
     bce_component, dice_component, probabilities = scalar_loss_components(logits, masks, criterion)
     observer.record_global("loss_logits", logits)
     observer.record_global("loss_probabilities", probabilities)
+    for name, component in (
+        ("bce_component", bce_component),
+        ("soft_dice_component", dice_component),
+    ):
+        if not torch.isfinite(component.detach()).all():
+            raise ForensicFailure(
+                phase="loss",
+                stage="loss_component",
+                tensor_name=f"global/{name}",
+                stats=tensor_stats(component.detach()),
+            )
     observer.record_global("bce_component", bce_component)
     observer.record_global("soft_dice_component", dice_component)
     loss = criterion(logits, masks)
+    if not torch.isfinite(loss.detach()).all():
+        raise ForensicFailure(
+            phase="loss",
+            stage="total_loss",
+            tensor_name="global/total_loss",
+            stats=tensor_stats(loss.detach()),
+        )
     observer.record_global("total_loss", loss.detach())
     return loss
 
@@ -1478,6 +1905,7 @@ def failure_report_and_state(
     train_generator: torch.Generator,
     validation_generator: torch.Generator,
     recent_history: list[dict[str, Any]],
+    checkpoint_budget_summary: dict[str, Any] | None = None,
 ) -> None:
     checkpoint_dir = output_dir / "checkpoints"
     pre_failure = checkpoint_dir / "pre_failure_step.pt"
@@ -1516,9 +1944,11 @@ def failure_report_and_state(
         "global_step": int(global_step),
         "sample_ids": sample_ids,
         "phase": failure.phase,
+        "classification": classify_failure(failure),
         "stage": failure.stage,
         "tensor_name": failure.tensor_name,
         "direction": failure.direction,
+        "value_type": classify_nonfinite_value(failure.stats),
         "num_nan": int(failure.stats.get("num_nan", 0)),
         "num_pos_inf": int(failure.stats.get("num_pos_inf", 0)),
         "num_neg_inf": int(failure.stats.get("num_neg_inf", 0)),
@@ -1527,9 +1957,20 @@ def failure_report_and_state(
         "gradient": gradient_info,
         "gradient_norm": gradient_info.get("l2_norm") if gradient_info else None,
         "parameter_name": (
-            gradient_info.get("first_nonfinite", {}).get("parameter_name")
-            if gradient_info and gradient_info.get("first_nonfinite")
-            else None
+            failure.tensor_name
+            if classify_failure(failure)
+            in {
+                "gradient",
+                "optimizer_state_before_step",
+                "optimizer_state_after_step",
+                "parameter_before_step",
+                "parameter_after_step",
+            }
+            else (
+                gradient_info.get("first_nonfinite", {}).get("parameter_name")
+                if gradient_info and gradient_info.get("first_nonfinite")
+                else None
+            )
         ),
         "pre_failure_checkpoint": str(pre_failure),
         "failure_state_checkpoint": str(failure_state),
@@ -1540,7 +1981,23 @@ def failure_report_and_state(
         "dataloader_rng_saved": True,
         "failure_stats": failure.stats,
         "detailed_statistics": detailed,
+        "optimization_telemetry": {
+            key: detailed.get(key)
+            for key in (
+                "gradient",
+                "parameters_before_step",
+                "parameters_after_step",
+                "optimizer_state_before_step",
+                "optimizer_state_after_step",
+                "learning_rate",
+            )
+            if key in detailed
+        },
+        "maximum_activation_values": observer.max_observed,
+        "epoch_numerical_summary": observer.epoch_summary(),
+        "immediately_preceding_step": recent_history[-1] if recent_history else None,
         "recent_history": recent_history,
+        "checkpoint_budget": checkpoint_budget_summary,
         "historical_epoch27_is_not_exactly_replayed": True,
     }
     write_json(output_dir / "failure_report.json", report)
@@ -1557,6 +2014,8 @@ def train_forensic(
     sanity_check: bool,
     anomaly_detection: bool,
     checkpoint_every: int,
+    max_warning_checkpoints: int,
+    max_total_checkpoints: int,
 ) -> int:
     if checkpoint_every <= 0:
         raise ValueError("checkpoint_every must be positive")
@@ -1567,6 +2026,11 @@ def train_forensic(
     warning_state_events_path = output_dir / "warning_state_events.jsonl"
     events_path.touch()
     warning_state_events_path.touch()
+    checkpoint_budget = CheckpointBudget(
+        max_warning_checkpoints=max_warning_checkpoints,
+        max_total_checkpoints=max_total_checkpoints,
+        event_sink=lambda event: append_jsonl(warning_state_events_path, event),
+    )
 
     write_json(output_dir / "config_snapshot.json", config)
     model = build_model(config).to(device)
@@ -1607,9 +2071,13 @@ def train_forensic(
             "anomaly_detection": anomaly_detection,
             "regular_checkpoint_interval_epochs": checkpoint_every,
             "warning_state_events_path": str(warning_state_events_path),
+            "max_warning_checkpoints": max_warning_checkpoints,
+            "max_total_checkpoints": max_total_checkpoints,
+            "checkpoint_budget": checkpoint_budget.summary(),
             "checkpoint_policy": (
                 "one full regular checkpoint every checkpoint interval; one overwritten "
-                "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
+                "best.pt; warning checkpoints subject to max-warning-checkpoints and "
+                "max-total-checkpoints; failure checkpoints only on failure"
             ),
             "instrumentation_is_observational": True,
             "existing_a1_artifacts_modified": False,
@@ -1673,6 +2141,7 @@ def train_forensic(
         if max_epochs is not None:
             epoch_budget = min(epoch_budget, int(max_epochs))
         for epoch in range(1, epoch_budget + 1):
+            observer.begin_epoch(epoch)
             model.train()
             train_loss_total = 0.0
             train_samples = 0
@@ -1692,6 +2161,7 @@ def train_forensic(
                     global_step=global_step,
                     sample_ids=sample_ids,
                 )
+                observer.current["learning_rate"] = float(optimizer.param_groups[0]["lr"])
                 try:
                     logits = model(images)
                     compact_forward, detail_forward, warning = observer.finish_forward()
@@ -1716,6 +2186,10 @@ def train_forensic(
                         ) from error
                     gradients = gradient_summary(model)
                     observer.current["gradient"] = gradients
+                    parameters_before = parameter_summary(model)
+                    optimizer_state_before = optimizer_state_summary(model, optimizer)
+                    observer.current["parameters_before_step"] = parameters_before
+                    observer.current["optimizer_state_before_step"] = optimizer_state_before
                     if gradients["first_nonfinite"] is not None:
                         failure_info = gradients["first_nonfinite"]
                         raise ForensicFailure(
@@ -1724,20 +2198,38 @@ def train_forensic(
                             tensor_name=failure_info["parameter_name"],
                             stats=failure_info["stats"],
                         )
-                    parameters_before = parameter_finiteness(model)
-                    if parameters_before is not None:
+                    if parameters_before["first_nonfinite"] is not None:
+                        failure_info = parameters_before["first_nonfinite"]
                         raise ForensicFailure(
                             phase="parameter",
                             stage="before_optimizer_step",
-                            tensor_name=parameters_before["parameter_name"],
-                            stats=parameters_before["stats"],
+                            tensor_name=failure_info["parameter_name"],
+                            stats=failure_info["stats"],
                         )
-                    if warning:
-                        warning_checkpoint_path = (
-                            output_dir
-                            / "checkpoints"
-                            / f"warning_e{epoch:03d}_b{batch_index:04d}_s{global_step:06d}.pt"
+                    if optimizer_state_before["first_nonfinite"] is not None:
+                        failure_info = optimizer_state_before["first_nonfinite"]
+                        raise ForensicFailure(
+                            phase="optimizer_state_before_step",
+                            stage="before_optimizer_step",
+                            tensor_name=failure_info["parameter_name"],
+                            stats=failure_info["stats"],
                         )
+                    warning_checkpoint_path = (
+                        output_dir
+                        / "checkpoints"
+                        / f"warning_e{epoch:03d}_b{batch_index:04d}_s{global_step:06d}.pt"
+                    )
+                    if warning and checkpoint_budget.can_save(
+                        checkpoint_kind="warning",
+                        path=warning_checkpoint_path,
+                        context={
+                            "epoch": epoch,
+                            "batch": batch_index,
+                            "batch_index": batch_index,
+                            "global_step": global_step,
+                            "split": "train",
+                        },
+                    ):
                         save_training_state(
                             warning_checkpoint_path,
                             model=model,
@@ -1751,24 +2243,39 @@ def train_forensic(
                             validation_generator=validation_generator,
                             label="warning_before_optimizer_step",
                         )
+                        checkpoint_budget.record_saved(
+                            checkpoint_kind="warning",
+                            path=warning_checkpoint_path,
+                        )
                         observer.record_warning_checkpoint_saved(warning_checkpoint_path)
                     optimizer.step()
-                    parameters_after = parameter_finiteness(model)
-                    if parameters_after is not None:
+                    parameters_after = parameter_summary(model)
+                    observer.current["parameters_after_step"] = parameters_after
+                    if parameters_after["first_nonfinite"] is not None:
+                        failure_info = parameters_after["first_nonfinite"]
                         raise ForensicFailure(
                             phase="parameter",
                             stage="after_optimizer_step",
-                            tensor_name=parameters_after["parameter_name"],
-                            stats=parameters_after["stats"],
+                            tensor_name=failure_info["parameter_name"],
+                            stats=failure_info["stats"],
                         )
-                    optimizer_state_after = optimizer_state_finiteness(model, optimizer)
-                    if optimizer_state_after is not None:
+                    optimizer_state_after = optimizer_state_summary(model, optimizer)
+                    observer.current["optimizer_state_after_step"] = optimizer_state_after
+                    if optimizer_state_after["first_nonfinite"] is not None:
+                        failure_info = optimizer_state_after["first_nonfinite"]
                         raise ForensicFailure(
-                            phase="optimizer_state",
-                            stage=optimizer_state_after["state_name"],
-                            tensor_name=optimizer_state_after["parameter_name"],
-                            stats=optimizer_state_after["stats"],
+                            phase="optimizer_state_after_step",
+                            stage="after_optimizer_step",
+                            tensor_name=failure_info["parameter_name"],
+                            stats=failure_info["stats"],
                         )
+                    observer.record_optimization_telemetry(
+                        gradients=gradients,
+                        parameters_before=parameters_before,
+                        parameters_after=parameters_after,
+                        optimizer_before=optimizer_state_before,
+                        optimizer_after=optimizer_state_after,
+                    )
                     step_record = {
                         **compact_forward,
                         "loss": float(loss.detach().item()),
@@ -1780,6 +2287,13 @@ def train_forensic(
                             for parameter in model.parameters()
                         ),
                         "warning": warning,
+                        "optimization": {
+                            "gradient": gradients,
+                            "parameters_before_step": parameters_before,
+                            "parameters_after_step": parameters_after,
+                            "optimizer_state_before_step": optimizer_state_before,
+                            "optimizer_state_after_step": optimizer_state_after,
+                        },
                     }
                     rolling_history.append(step_record)
                     rolling_history = rolling_history[-20:]
@@ -1810,6 +2324,14 @@ def train_forensic(
             for warning_record in validation_warning_records:
                 append_jsonl(events_path, warning_record["warning"])
             scheduler.step()
+            scheduler_failure = scheduler_state_finiteness(scheduler)
+            if scheduler_failure is not None:
+                raise ForensicFailure(
+                    phase="scheduler_state",
+                    stage="after_scheduler_step",
+                    tensor_name=scheduler_failure["state_name"],
+                    stats=tensor_stats(torch.tensor([float(scheduler_failure["value"])])),
+                )
             if not math.isfinite(validation["dice"]):
                 raise RuntimeError("validation Dice became non-finite")
             completed_epochs = epoch
@@ -1820,12 +2342,24 @@ def train_forensic(
                 "learning_rate": float(scheduler.get_last_lr()[0]),
                 "global_step": global_step,
                 "train_batches": train_batch_count,
+                "numerical_summary": observer.epoch_summary(),
             }
             history.append(epoch_record)
             write_json(output_dir / "training_history.json", {"history": history})
-            if epoch % checkpoint_every == 0:
+            regular_checkpoint_path = output_dir / "checkpoints" / f"epoch_{epoch:03d}.pt"
+            if epoch % checkpoint_every == 0 and checkpoint_budget.can_save(
+                checkpoint_kind="regular",
+                path=regular_checkpoint_path,
+                context={
+                    "epoch": epoch,
+                    "batch": -1,
+                    "batch_index": -1,
+                    "global_step": global_step,
+                    "split": "epoch",
+                },
+            ):
                 save_training_state(
-                    output_dir / "checkpoints" / f"epoch_{epoch:03d}.pt",
+                    regular_checkpoint_path,
                     model=model,
                     optimizer=optimizer,
                     scheduler=scheduler,
@@ -1837,21 +2371,41 @@ def train_forensic(
                     validation_generator=validation_generator,
                     label="regular_epoch_checkpoint",
                 )
+                checkpoint_budget.record_saved(
+                    checkpoint_kind="regular",
+                    path=regular_checkpoint_path,
+                )
             if validation["dice"] > best_validation_dice:
                 best_validation_dice = validation["dice"]
-                save_training_state(
-                    output_dir / "checkpoints" / "best.pt",
-                    model=model,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    config=config,
-                    epoch=epoch,
-                    global_step=global_step,
-                    best_validation_dice=best_validation_dice,
-                    train_generator=train_generator,
-                    validation_generator=validation_generator,
-                    label="best_validation_dice_checkpoint",
-                )
+                best_checkpoint_path = output_dir / "checkpoints" / "best.pt"
+                if checkpoint_budget.can_save(
+                    checkpoint_kind="best",
+                    path=best_checkpoint_path,
+                    context={
+                        "epoch": epoch,
+                        "batch": -1,
+                        "batch_index": -1,
+                        "global_step": global_step,
+                        "split": "validation",
+                    },
+                ):
+                    save_training_state(
+                        best_checkpoint_path,
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        config=config,
+                        epoch=epoch,
+                        global_step=global_step,
+                        best_validation_dice=best_validation_dice,
+                        train_generator=train_generator,
+                        validation_generator=validation_generator,
+                        label="best_validation_dice_checkpoint",
+                    )
+                    checkpoint_budget.record_saved(
+                        checkpoint_kind="best",
+                        path=best_checkpoint_path,
+                    )
             write_json(
                 output_dir / "experiment_metadata.json",
                 {
@@ -1877,9 +2431,13 @@ def train_forensic(
                     "sanity_check": sanity_results,
                     "regular_checkpoint_interval_epochs": checkpoint_every,
                     "warning_state_events_path": str(warning_state_events_path),
+                    "max_warning_checkpoints": max_warning_checkpoints,
+                    "max_total_checkpoints": max_total_checkpoints,
+                    "checkpoint_budget": checkpoint_budget.summary(),
                     "checkpoint_policy": (
                         "one full regular checkpoint every checkpoint interval; one overwritten "
-                        "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
+                        "best.pt; warning checkpoints subject to max-warning-checkpoints and "
+                        "max-total-checkpoints; failure checkpoints only on failure"
                     ),
                     "instrumentation_is_observational": True,
                     "existing_a1_artifacts_modified": False,
@@ -1914,9 +2472,13 @@ def train_forensic(
                 "sanity_check": sanity_results,
                 "regular_checkpoint_interval_epochs": checkpoint_every,
                 "warning_state_events_path": str(warning_state_events_path),
+                "max_warning_checkpoints": max_warning_checkpoints,
+                "max_total_checkpoints": max_total_checkpoints,
+                "checkpoint_budget": checkpoint_budget.summary(),
                 "checkpoint_policy": (
                     "one full regular checkpoint every checkpoint interval; one overwritten "
-                    "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
+                    "best.pt; warning checkpoints subject to max-warning-checkpoints and "
+                    "max-total-checkpoints; failure checkpoints only on failure"
                 ),
                 "instrumentation_is_observational": True,
                 "existing_a1_artifacts_modified": False,
@@ -1936,11 +2498,20 @@ def train_forensic(
                 "completed_epochs": completed_epochs,
                 "global_step": global_step,
                 "warning_count": sum(1 for line in events_path.read_text(encoding="utf-8").splitlines() if line),
+                "warning_lifecycle_event_count": sum(
+                    1
+                    for line in warning_state_events_path.read_text(encoding="utf-8").splitlines()
+                    if line
+                ),
                 "regular_checkpoint_interval_epochs": checkpoint_every,
                 "warning_state_events_path": str(warning_state_events_path),
+                "max_warning_checkpoints": max_warning_checkpoints,
+                "max_total_checkpoints": max_total_checkpoints,
+                "checkpoint_budget": checkpoint_budget.summary(),
                 "checkpoint_policy": (
                     "one full regular checkpoint every checkpoint interval; one overwritten "
-                    "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
+                    "best.pt; warning checkpoints subject to max-warning-checkpoints and "
+                    "max-total-checkpoints; failure checkpoints only on failure"
                 ),
                 "max_observed": observer.max_observed,
                 "warning_events_are_detailed_scalar_only": True,
@@ -1972,6 +2543,7 @@ def train_forensic(
             train_generator=train_generator,
             validation_generator=validation_generator,
             recent_history=rolling_history,
+            checkpoint_budget_summary=checkpoint_budget.summary(),
         )
         write_json(
             output_dir / "experiment_metadata.json",
@@ -1981,6 +2553,11 @@ def train_forensic(
                 "global_step": global_step,
                 "failure_stage": caught.stage,
                 "failure_phase": caught.phase,
+                "failure_classification": classify_failure(caught),
+                "warning_state_events_path": str(warning_state_events_path),
+                "max_warning_checkpoints": max_warning_checkpoints,
+                "max_total_checkpoints": max_total_checkpoints,
+                "checkpoint_budget": checkpoint_budget.summary(),
                 "historical_epoch27_not_exactly_replayed": True,
                 "existing_a1_artifacts_modified": False,
                 "reference_files_modified": False,
@@ -2011,7 +2588,19 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint-every-epochs",
         type=int,
         default=10,
-        help="regular full-checkpoint interval; best/failure/warning checkpoints are independent",
+        help="regular full-checkpoint interval; warning and best checkpoints are budgeted, failure checkpoints are exempt",
+    )
+    parser.add_argument(
+        "--max-warning-checkpoints",
+        type=int,
+        default=20,
+        help="maximum number of full warning checkpoints; warning telemetry continues after exhaustion",
+    )
+    parser.add_argument(
+        "--max-total-checkpoints",
+        type=int,
+        default=40,
+        help="maximum number of ordinary checkpoint files; failure checkpoints are exempt",
     )
     return parser.parse_args()
 
@@ -2038,6 +2627,8 @@ def main() -> int:
         sanity_check=args.sanity_check,
         anomaly_detection=args.anomaly_detection,
         checkpoint_every=args.checkpoint_every_epochs,
+        max_warning_checkpoints=args.max_warning_checkpoints,
+        max_total_checkpoints=args.max_total_checkpoints,
     )
 
 
