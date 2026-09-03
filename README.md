@@ -18,6 +18,8 @@ The current experiment is Architecture A1, an independent alternating/bidirectio
 
 The diagnostic-only comparison is implemented in `scripts/diagnose_vil_block_amplification.py`. Using the local epoch-1 sanity checkpoints, it found finite A0 and A1 forward/reverse block tensors and exactly preserved model outputs when its hooks were enabled. These bounded observations are not A1 experiment results and do not justify numerical mitigation or retraining.
 
+The forensic A1 continuation tool is `scripts/train_a1_forensic.py`. Its initial warning-checkpoint behavior was found to be level-triggered, causing repeated large checkpoint writes during sustained threshold violations. The tool now records warning episodes, writes a warning checkpoint only on a threshold crossing, retains failure checkpoints, and uses a bounded regular-checkpoint interval for forensic runs. This corrects diagnostic storage only; it does not change the A1 model, training protocol, or historical failed run. The supplied archive recorded 172 warning events but contained no checkpoint files, so the original epoch-27 failure remains unresolved and has not been reproduced.
+
 ## Reference structure
 
 - `Reference/Papers/` - source PDFs

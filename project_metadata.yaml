@@ -126,6 +126,27 @@ architecture_a1:
       interpretation: "bounded implementation observation only; not a reproduction or valid A1 experiment result"
     mitigation_applied: false
     next_evidence: "instrumented replay from retained epoch-26 Colab state, if available; otherwise exact first-failure localization remains impossible"
+  forensic_diagnostic:
+    script: "scripts/train_a1_forensic.py"
+    purpose: "bounded numerical-stability investigation and forensic checkpoint retention"
+    historical_run_preserved: true
+    supplied_archive: "drive-download-20260903T205343Z-1-001.zip"
+    supplied_archive_warning_events: 172
+    supplied_archive_training_warning_events: 143
+    supplied_archive_validation_warning_events: 29
+    first_supplied_warning: "epoch 1, training batch 165, vil/forward_block_0/gated_product abs_max > 100"
+    storage_issue: "level-triggered warning checkpointing repeated writes during sustained threshold violations"
+    storage_correction: "edge-triggered warning episodes keyed by split/scope/metric/threshold; warning checkpoint on first crossing and after recrossing only"
+    regular_checkpoint_interval_epochs: 10
+    failure_checkpoints_retained: true
+    warning_thresholds_changed: false
+    model_or_protocol_changed: false
+    bounded_validation:
+      focused_tests: "16/16 passed"
+      self_tests: "passed"
+      cpu_run: "one epoch, one training batch, one validation batch; finite completion"
+      full_forensic_colab_run: "not run"
+    limitation: "supplied archive contained no checkpoints; startup reproducibility state contained RNG state only; original epoch-27 first failure remains unlocalized"
 computational_scope:
   target: "basic laptop and Google Colab"
   initial_scope: "lightweight 2D experiments"
