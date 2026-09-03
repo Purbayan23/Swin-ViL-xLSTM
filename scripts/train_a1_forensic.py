@@ -30,6 +30,7 @@ import math
 import os
 import random
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -215,10 +216,15 @@ class ForensicObserver:
         self.current_details: dict[str, dict[str, Any]] = {}
         self.block_values: dict[str, dict[str, torch.Tensor]] = {}
         self.max_observed: dict[str, dict[str, float | int | None]] = {}
+        # Warning episodes persist across forward passes.  Each condition is
+        # keyed by its scope, statistic, and threshold, so crossing a higher
+        # threshold is a new episode even if a lower threshold remains active.
+        self.warning_active: dict[tuple[str, str, str, float], bool] = {}
         self.last_forward_detail: dict[str, Any] | None = None
         self.last_compact: dict[str, Any] = {}
         self.last_warning: bool = False
         self.last_warning_reasons: list[str] = []
+        self.last_warning_crossings: list[str] = []
 
     def begin_forward(
         self,
@@ -240,6 +246,7 @@ class ForensicObserver:
         self.block_values = {}
         self.last_warning = False
         self.last_warning_reasons = []
+        self.last_warning_crossings = []
 
     def _scope_key(self, scope: str, name: str) -> str:
         return f"{scope}/{name}"
@@ -248,18 +255,40 @@ class ForensicObserver:
         absolute_maximum = stats.get("abs_max")
         if absolute_maximum is not None:
             for threshold in self.ABS_THRESHOLDS:
-                if absolute_maximum > threshold:
+                condition_key = (
+                    str(self.current.get("split", "unknown")),
+                    scope,
+                    f"{name}:abs_max",
+                    float(threshold),
+                )
+                active = absolute_maximum > threshold
+                was_active = self.warning_active.get(condition_key, False)
+                self.warning_active[condition_key] = active
+                if active:
                     reason = f"{scope}/{name}:abs_max>{threshold:g}"
                     if reason not in self.last_warning_reasons:
                         self.last_warning_reasons.append(reason)
+                    if not was_active and reason not in self.last_warning_crossings:
+                        self.last_warning_crossings.append(reason)
         if name == "max_log_decay" and stats.get("min") is not None:
             negative_minimum = -float(stats["min"])
             for threshold in self.LOG_DECAY_THRESHOLDS:
-                if negative_minimum > threshold:
+                condition_key = (
+                    str(self.current.get("split", "unknown")),
+                    scope,
+                    f"{name}:-min",
+                    float(threshold),
+                )
+                active = negative_minimum > threshold
+                was_active = self.warning_active.get(condition_key, False)
+                self.warning_active[condition_key] = active
+                if active:
                     reason = f"{scope}/{name}:-min>{threshold:g}"
                     if reason not in self.last_warning_reasons:
                         self.last_warning_reasons.append(reason)
-        self.last_warning = bool(self.last_warning_reasons)
+                    if not was_active and reason not in self.last_warning_crossings:
+                        self.last_warning_crossings.append(reason)
+        self.last_warning = bool(self.last_warning_crossings)
 
     def record(
         self,
@@ -431,6 +460,8 @@ class ForensicObserver:
         compact = {
             **self.current,
             "warnings": list(self.last_warning_reasons),
+            "warning_crossings": list(self.last_warning_crossings),
+            "warning_crossed": self.last_warning,
             "vil": compact_blocks,
         }
         detail = None
@@ -439,6 +470,7 @@ class ForensicObserver:
                 **self.current,
                 "event_type": "warning",
                 "warnings": list(self.last_warning_reasons),
+                "warning_crossings": list(self.last_warning_crossings),
                 "stages": copy.deepcopy(self.current_details),
             }
         self.last_compact = compact
@@ -456,6 +488,7 @@ class ForensicObserver:
             "direction": failure.direction,
             "failure_stats": failure.stats,
             "warnings": list(self.last_warning_reasons),
+            "warning_crossings": list(self.last_warning_crossings),
             "stages": copy.deepcopy(self.current_details),
         }
 
@@ -798,6 +831,140 @@ def compare_nested_tensors(left: Any, right: Any) -> float:
     return maximum
 
 
+def run_forensic_self_tests() -> dict[str, Any]:
+    """Exercise warning episodes and failure retention without model training."""
+
+    observer = ForensicObserver()
+
+    def observe_value(value: float, name: str = "test_metric") -> tuple[bool, bool, dict[str, Any]]:
+        observer.begin_forward(
+            split="self_test",
+            epoch=0,
+            batch_index=0,
+            global_step=0,
+            sample_ids=["self_test"],
+        )
+        observer.record("vil/forward_block_0", name, torch.tensor([value]))
+        compact, detail, crossed = observer.finish_forward()
+        observer.clear()
+        return crossed, detail is not None, compact
+
+    below_crossed, below_detail, compact = observe_value(50.0)
+    first_crossed, first_detail, _ = observe_value(101.0)
+    sustained_crossed, sustained_detail, _ = observe_value(110.0)
+    reset_crossed, reset_detail, _ = observe_value(50.0)
+    recrossed, recross_detail, _ = observe_value(101.0)
+
+    log_observer = ForensicObserver()
+
+    def observe_log_decay(value: float) -> bool:
+        log_observer.begin_forward(
+            split="self_test",
+            epoch=0,
+            batch_index=0,
+            global_step=0,
+            sample_ids=["self_test"],
+        )
+        log_observer.record(
+            "vil/forward_block_0",
+            "max_log_decay",
+            torch.tensor([value]),
+        )
+        _, _, crossed = log_observer.finish_forward()
+        log_observer.clear()
+        return crossed
+
+    log_first = observe_log_decay(-51.0)
+    log_sustained = observe_log_decay(-55.0)
+    log_reset = observe_log_decay(-49.0)
+    log_recross = observe_log_decay(-51.0)
+
+    nonfinite_observer = ForensicObserver()
+    nonfinite_observer.begin_forward(
+        split="self_test",
+        epoch=0,
+        batch_index=0,
+        global_step=0,
+        sample_ids=["self_test"],
+    )
+    try:
+        nonfinite_observer.record(
+            "vil/forward_block_0",
+            "nonfinite_test",
+            torch.tensor([float("nan")]),
+        )
+    except ForensicFailure as error:
+        nonfinite_detected = (
+            error.stats["num_nan"] == 1
+            and error.stats["num_pos_inf"] == 0
+            and error.stats["num_neg_inf"] == 0
+        )
+    else:
+        nonfinite_detected = False
+
+    with tempfile.TemporaryDirectory(prefix="a1_forensic_self_test_") as directory:
+        directory_path = Path(directory)
+        test_model = nn.Linear(2, 1)
+        test_optimizer = torch.optim.AdamW(test_model.parameters(), lr=1e-3)
+        test_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            test_optimizer,
+            T_max=100,
+            eta_min=1e-6,
+        )
+        train_generator = make_dataloader_generator(42)
+        validation_generator = make_dataloader_generator(43)
+        failure_observer = ForensicObserver()
+        failure_observer.begin_forward(
+            split="self_test",
+            epoch=1,
+            batch_index=2,
+            global_step=2,
+            sample_ids=["self_test"],
+        )
+        failure = ForensicFailure(
+            phase="forward",
+            stage="self_test",
+            tensor_name="self_test_tensor",
+            stats=tensor_stats(torch.tensor([float("inf")])),
+        )
+        failure_report_and_state(
+            output_dir=directory_path,
+            failure=failure,
+            observer=failure_observer,
+            model=test_model,
+            optimizer=test_optimizer,
+            scheduler=test_scheduler,
+            config={"seed": 42},
+            epoch=1,
+            batch_index=2,
+            global_step=2,
+            sample_ids=["self_test"],
+            learning_rate=1e-3,
+            gradient_info=None,
+            best_validation_dice=float("-inf"),
+            train_generator=train_generator,
+            validation_generator=validation_generator,
+            recent_history=[],
+        )
+        failure_checkpoint_behavior = all(
+            (directory_path / "checkpoints" / filename).is_file()
+            for filename in ("pre_failure_step.pt", "failure_state.pt")
+        ) and (directory_path / "failure_report.json").is_file()
+
+    results = {
+        "below_threshold_no_checkpoint": not below_crossed and not below_detail,
+        "first_crossing_one_event": first_crossed and first_detail,
+        "sustained_above_no_event": not sustained_crossed and not sustained_detail,
+        "below_threshold_resets_episode": not reset_crossed and not reset_detail,
+        "later_recross_one_event": recrossed and recross_detail,
+        "log_decay_crossing": log_first and not log_sustained and not log_reset and log_recross,
+        "nonfinite_detection": nonfinite_detected,
+        "failure_checkpoint_behavior": failure_checkpoint_behavior,
+        "compact_logging_present": "vil" in compact and "warning_crossed" in compact,
+    }
+    return {"passed": all(results.values()), "checks": results}
+
+
 def run_instrumentation_equivalence(
     model: nn.Module,
     config: dict[str, Any],
@@ -1098,7 +1265,10 @@ def train_forensic(
     max_validation_batches: int | None,
     sanity_check: bool,
     anomaly_detection: bool,
+    checkpoint_every: int,
 ) -> int:
+    if checkpoint_every <= 0:
+        raise ValueError("checkpoint_every must be positive")
     output_dir.mkdir(parents=True, exist_ok=False)
     for directory in (output_dir / "checkpoints", output_dir / "diagnostics"):
         directory.mkdir(parents=True, exist_ok=False)
@@ -1142,6 +1312,11 @@ def train_forensic(
             "max_batches": max_batches,
             "max_validation_batches": max_validation_batches,
             "anomaly_detection": anomaly_detection,
+            "regular_checkpoint_interval_epochs": checkpoint_every,
+            "checkpoint_policy": (
+                "one full regular checkpoint every checkpoint interval; one overwritten "
+                "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
+            ),
             "instrumentation_is_observational": True,
             "existing_a1_artifacts_modified": False,
             "reference_files_modified": False,
@@ -1158,17 +1333,27 @@ def train_forensic(
 
     sanity_results: dict[str, Any] | None = None
     if sanity_check:
+        warning_tests = run_forensic_self_tests()
+        if not warning_tests["passed"]:
+            raise RuntimeError(f"warning/self-tests failed: {warning_tests}")
         train_generator_before_sanity = train_generator.get_state()
         first_batch = next(iter(train_loader))
-        sanity_results = run_instrumentation_equivalence(
+        equivalence_results = run_instrumentation_equivalence(
             model=model,
             config=config,
             batch=first_batch,
             device=device,
         )
-        write_json(output_dir / "diagnostics" / "instrumentation_equivalence.json", sanity_results)
-        if not sanity_results["passed"]:
-            raise RuntimeError(f"instrumentation equivalence failed: {sanity_results}")
+        sanity_results = {
+            "warning_threshold_tests": warning_tests,
+            "instrumentation_equivalence": equivalence_results,
+        }
+        write_json(
+            output_dir / "diagnostics" / "sanity_tests.json",
+            sanity_results,
+        )
+        if not equivalence_results["passed"]:
+            raise RuntimeError(f"instrumentation equivalence failed: {equivalence_results}")
         # The equivalence check is a validation-only operation.  Restore the
         # DataLoader generator so the bounded training run retains the same
         # shuffle behavior it would have had without this check.
@@ -1335,19 +1520,20 @@ def train_forensic(
             }
             history.append(epoch_record)
             write_json(output_dir / "training_history.json", {"history": history})
-            save_training_state(
-                output_dir / "checkpoints" / f"epoch_{epoch:03d}.pt",
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                config=config,
-                epoch=epoch,
-                global_step=global_step,
-                best_validation_dice=best_validation_dice,
-                train_generator=train_generator,
-                validation_generator=validation_generator,
-                label="regular_epoch_checkpoint",
-            )
+            if epoch % checkpoint_every == 0:
+                save_training_state(
+                    output_dir / "checkpoints" / f"epoch_{epoch:03d}.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    config=config,
+                    epoch=epoch,
+                    global_step=global_step,
+                    best_validation_dice=best_validation_dice,
+                    train_generator=train_generator,
+                    validation_generator=validation_generator,
+                    label="regular_epoch_checkpoint",
+                )
             if validation["dice"] > best_validation_dice:
                 best_validation_dice = validation["dice"]
                 save_training_state(
@@ -1386,6 +1572,11 @@ def train_forensic(
                     "completed_epochs": completed_epochs,
                     "global_step": global_step,
                     "sanity_check": sanity_results,
+                    "regular_checkpoint_interval_epochs": checkpoint_every,
+                    "checkpoint_policy": (
+                        "one full regular checkpoint every checkpoint interval; one overwritten "
+                        "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
+                    ),
                     "instrumentation_is_observational": True,
                     "existing_a1_artifacts_modified": False,
                     "reference_files_modified": False,
@@ -1417,6 +1608,11 @@ def train_forensic(
                 "completed_epochs": completed_epochs,
                 "global_step": global_step,
                 "sanity_check": sanity_results,
+                "regular_checkpoint_interval_epochs": checkpoint_every,
+                "checkpoint_policy": (
+                    "one full regular checkpoint every checkpoint interval; one overwritten "
+                    "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
+                ),
                 "instrumentation_is_observational": True,
                 "existing_a1_artifacts_modified": False,
                 "reference_files_modified": False,
@@ -1435,6 +1631,11 @@ def train_forensic(
                 "completed_epochs": completed_epochs,
                 "global_step": global_step,
                 "warning_count": sum(1 for line in events_path.read_text(encoding="utf-8").splitlines() if line),
+                "regular_checkpoint_interval_epochs": checkpoint_every,
+                "checkpoint_policy": (
+                    "one full regular checkpoint every checkpoint interval; one overwritten "
+                    "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
+                ),
                 "max_observed": observer.max_observed,
                 "warning_events_are_detailed_scalar_only": True,
                 "historical_epoch27_not_exactly_replayed": True,
@@ -1500,6 +1701,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-validation-batches", type=int, default=None)
     parser.add_argument("--sanity-check", action="store_true")
     parser.add_argument("--anomaly-detection", action="store_true")
+    parser.add_argument(
+        "--checkpoint-every-epochs",
+        type=int,
+        default=10,
+        help="regular full-checkpoint interval; best/failure/warning checkpoints are independent",
+    )
     return parser.parse_args()
 
 
@@ -1524,6 +1731,7 @@ def main() -> int:
         max_validation_batches=args.max_validation_batches,
         sanity_check=args.sanity_check,
         anomaly_detection=args.anomaly_detection,
+        checkpoint_every=args.checkpoint_every_epochs,
     )
 
 
