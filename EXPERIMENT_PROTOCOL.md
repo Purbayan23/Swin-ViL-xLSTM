@@ -12,6 +12,8 @@ The first full A1 run failed at epoch 27: training and validation losses became 
 
 Read-only inspection of the current code identified a shared mLSTM hazard at `torch.exp(-max_log_decay)`, which can overflow in float32 for `max_log_decay < -88.722839`. A controlled stress case showed finite forward output/loss, then non-finite gradients, followed by non-finite AdamW state and parameters. The exact first operation in the remote epoch-27 state remains unconfirmed because that checkpoint was not available locally. No mitigation has been adopted.
 
+A bounded diagnostic comparison was subsequently completed on 2026-09-04 using the local epoch-1 A0 and A1 sanity checkpoints and one restored-checkpoint batch per model. It recorded ViL inputs, normalization, convolution, Q/K/V, raw and normalized mLSTM outputs, skip/gating tensors, projections, residual outputs, losses, gradients, parameters, and AdamW state. All recorded values were finite. A0 raw parallel mLSTM output reached `0.0032005`; A1 reached `0.0040266` in the forward block and `0.0032235` in the reverse block. The diagnostic report is `experiments/sanity/vil_block_amplification_comparison.json`. Hook-enabled outputs matched hook-disabled outputs exactly for both models. These are bounded implementation observations only; they neither reproduce the original epoch-27 failure nor constitute an A1 experiment result. The exact failing batch and operation remain unresolved because the epoch-26 checkpoint and RNG/DataLoader state are unavailable. The protocol and A1 configuration remain unchanged.
+
 ## Data
 
 - Primary dataset: Kvasir-SEG.

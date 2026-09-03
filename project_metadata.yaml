@@ -106,12 +106,26 @@ architecture_a1:
     best_validation_epoch_before_failure: 15
     historical_metadata_retained: true
   numerical_stability_investigation:
-    status: "read_only_completed_remote_first_operation_unconfirmed"
+    status: "read_only_bounded_a0_a1_comparison_completed_remote_first_operation_unconfirmed"
     identified_shared_hazard: "torch.exp(-max_log_decay) can overflow in float32 when max_log_decay < -88.722839"
     controlled_failure_order: "finite forward/loss -> non-finite gradients -> non-finite AdamW state and parameters"
     local_seed42_trace: "A0 and A1 initial real-data traces finite; bounded fixed-batch A1 trace did not reproduce failure"
+    bounded_comparison:
+      status: "completed_no_nonfinite_values"
+      script: "scripts/diagnose_vil_block_amplification.py"
+      report: "experiments/sanity/vil_block_amplification_comparison.json"
+      checkpoints: "local epoch-1 A0 and A1 sanity checkpoints"
+      same_first_sample: true
+      a0_raw_parallel_mlstm_abs_max: 0.0032005224
+      a1_forward_raw_parallel_mlstm_abs_max: 0.0040265894
+      a1_reverse_raw_parallel_mlstm_abs_max: 0.0032234993
+      a0_final_block_abs_max: 5.0649877
+      a1_forward_final_block_abs_max: 4.5947361
+      a1_reverse_final_block_abs_max: 5.1494236
+      hook_output_max_abs_difference: 0.0
+      interpretation: "bounded implementation observation only; not a reproduction or valid A1 experiment result"
     mitigation_applied: false
-    next_evidence: "instrumented replay from retained epoch-26 Colab state, if available"
+    next_evidence: "instrumented replay from retained epoch-26 Colab state, if available; otherwise exact first-failure localization remains impossible"
 computational_scope:
   target: "basic laptop and Google Colab"
   initial_scope: "lightweight 2D experiments"
@@ -213,6 +227,6 @@ baseline_mask_preprocessing:
 unresolved_decisions:
   - "Exact Kvasir-SEG release/version identifier: TBD"
   - "Aspect-ratio-preserving preprocessing: future controlled experiment"
-  - "A1 numerical-stability localization after epoch-27 failure; no mitigation or protocol change approved"
+  - "Exact A1 numerical-stability localization after epoch-27 failure; bounded A0/A1 diagnostic completed, but no mitigation or protocol change approved"
   - "Exact lightweight Swin configuration: TBD"
   - "Pretrained-weight experiment design: TBD; first controlled comparison is from scratch"

@@ -179,3 +179,13 @@ Dates use the project date available when each entry was recorded. Initializatio
 - Local evidence: Seed-42 real-data A1/A0 stage traces and a bounded fixed-batch A1 trace remained finite. Causal-mask `-inf` values were expected. No clipping, epsilon, precision, learning-rate, architecture, optimizer, or protocol change was introduced.
 - Next evidence required: Instrumented replay from the retained epoch-26 Colab state, if available, logging mLSTM gate ranges, `max_log_decay`, the normalizer exponential, gradients, parameters, and optimizer state.
 - Status: A1 failed/incomplete; no valid A1 result; Architecture B remains deferred.
+
+## D-022 - Complete bounded A0/A1 ViL activation-amplification diagnostic
+
+- Date: 2026-09-04
+- Decision: Add and execute a diagnostic-only A0/A1 comparison that records the requested intermediate ViL block tensors without changing production model behavior or the mLSTM equations.
+- Method: `scripts/diagnose_vil_block_amplification.py` used the local epoch-1 A0 and A1 sanity checkpoints, the existing seed-42 training split and loader, one restored-checkpoint batch per model, and in-memory forward/backward/AdamW inspection. The same first sample was used for both models. The JSON report is `experiments/sanity/vil_block_amplification_comparison.json`.
+- Confirmed observations: all requested activations, losses, gradients, parameters, and AdamW state tensors were finite. A0 maximum raw parallel mLSTM output was `0.0032005`; A1 forward was `0.0040266` and reverse was `0.0032235`. The corresponding visible block-output maxima were A0 `5.0650`, A1 forward `4.5947`, and A1 reverse `5.1494` for this bounded checkpoint comparison. The A1 reverse block received the forward block output in reversed sequence order and produced a slightly larger final residual maximum for this sample.
+- Interpretation: the bounded epoch-1 comparison did not reproduce the large later-training amplification. Combined with the earlier A1 continuation diagnostic, it supports a shared mLSTM finite-precision hazard and a post-mLSTM gating/projection amplification path as hypotheses, but does not identify the original epoch-27 first non-finite operation.
+- Behavior control: hook-enabled versus hook-disabled outputs matched exactly (`max_abs_difference=0.0`) for both A0 and A1. No dataset, preprocessing, split, architecture, mLSTM formula, optimizer, scheduler, or protocol change was made.
+- Status: bounded diagnostic complete; original epoch-27 failure remains unlocalized and the A1 run remains failed/incomplete. This diagnostic is not a scientific A1 result and does not authorize mitigation or retraining.

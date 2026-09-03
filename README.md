@@ -14,7 +14,9 @@ The local laptop/Codex environment is used for CPU development and debugging, wh
 
 Architecture A0, `Pure U-Net + single-direction ViL/mLSTM bottleneck`, is complete and frozen. Its best validation Dice was `0.8005566217` at epoch 51; test Dice was `0.8175639115`, test IoU `0.7270158563`, precision `0.8651886918`, and recall `0.8180166952`. The earlier incorrect-head, initialization-confounded epoch-78 run remains historical and incomplete.
 
-The current experiment is Architecture A1, an independent alternating/bidirectional ViL/mLSTM bottleneck ablation. It retains A0’s U-Net, data, preprocessing, loss, optimizer, scheduler, and evaluation protocol, uses two sequential independent directional blocks with reverse-sequence alignment, and deliberately excludes positional encoding. The first full A1 run failed at epoch 27 with non-finite losses and is not a valid result; a read-only numerical-stability investigation is pending. Architecture B is deferred until A1 is evaluated validly.
+The current experiment is Architecture A1, an independent alternating/bidirectional ViL/mLSTM bottleneck ablation. It retains A0’s U-Net, data, preprocessing, loss, optimizer, scheduler, and evaluation protocol, uses two sequential independent directional blocks with reverse-sequence alignment, and deliberately excludes positional encoding. The first full A1 run failed at epoch 27 with non-finite losses and is not a valid result. A bounded A0/A1 activation-amplification diagnostic completed without non-finite values, but did not reproduce or localize that original failure; Architecture B is deferred until A1 is evaluated validly.
+
+The diagnostic-only comparison is implemented in `scripts/diagnose_vil_block_amplification.py`. Using the local epoch-1 sanity checkpoints, it found finite A0 and A1 forward/reverse block tensors and exactly preserved model outputs when its hooks were enabled. These bounded observations are not A1 experiment results and do not justify numerical mitigation or retraining.
 
 ## Reference structure
 

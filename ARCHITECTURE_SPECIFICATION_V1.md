@@ -452,6 +452,14 @@ The failed Colab epoch-26 state was not present in the checked-out project, so t
 
 On the local seed-42 real-data trace, A1 and A0 had finite activations, losses, gradients, parameters, and optimizer states. The causal-mask `-inf` entries were expected masked values. The bounded fixed-batch A1 trace did not reproduce the failure. No clipping, epsilon, precision, learning-rate, architecture, or protocol change was made. The next required evidence is an instrumented replay from the available epoch-26 Colab state, if retained.
 
+### Bounded A0/A1 block amplification diagnostic
+
+On 2026-09-04, `scripts/diagnose_vil_block_amplification.py` was executed against the local epoch-1 sanity checkpoints `experiments/sanity/architecture_a_vil_bottleneck_seed42.pt` and `experiments/sanity/architecture_a1_alternating_vil_bottleneck_seed42.pt`. Both models used the existing seed-42 train loader and the same first sample. The diagnostic captured the ViL input, LayerNorm output, causal-convolution output and activation, Q/K/V, raw parallel mLSTM output, normalized mLSTM output, learnable-skip sum, `SiLU(z)`, gated product, projection input/output, and final residual output.
+
+For the bounded batch, maximum absolute values were: A0 raw parallel mLSTM `0.0032005` and final block output `5.0650`; A1 forward raw parallel mLSTM `0.0040266` and final block output `4.5947`; A1 reverse raw parallel mLSTM `0.0032235` and final block output `5.1494`. All captured activations, losses, gradients, parameters, and AdamW state tensors were finite. The reverse block received the forward output after sequence reversal and produced a slightly larger final residual maximum in this comparison. Hook-enabled and hook-disabled model outputs matched exactly for both models (`max_abs_difference=0.0`), confirming observational instrumentation.
+
+These observations do not reproduce the later-training A1 amplification or the original epoch-27 NaN. The earlier epoch-15-to-30 A1 diagnostic remains the evidence for severe finite later-training amplification; the new bounded comparison shows that it is not present in the local epoch-1 sanity checkpoints. The mLSTM normalization hazard and post-mLSTM gating/projection path remain hypotheses for the original failure, not confirmed localization. No architecture, equation, initialization, training, or protocol change was made.
+
 # 4. Multi-stage ViL
 
 ## 4.1 Insertion rule
