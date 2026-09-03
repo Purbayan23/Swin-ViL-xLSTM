@@ -79,6 +79,9 @@ class ForensicFailure(RuntimeError):
         super().__init__(message or f"non-finite value at {phase}:{stage}:{tensor_name}")
 
 
+WarningConditionKey = tuple[str, str, str, float]
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -219,12 +222,17 @@ class ForensicObserver:
         # Warning episodes persist across forward passes.  Each condition is
         # keyed by its scope, statistic, and threshold, so crossing a higher
         # threshold is a new episode even if a lower threshold remains active.
-        self.warning_active: dict[tuple[str, str, str, float], bool] = {}
+        self.warning_active: dict[WarningConditionKey, bool] = {}
+        self.warning_episode_ids: dict[WarningConditionKey, int] = {}
+        self.warning_lifecycle_events: list[dict[str, Any]] = []
+        self.warning_event_sink: Any | None = None
         self.last_forward_detail: dict[str, Any] | None = None
         self.last_compact: dict[str, Any] = {}
         self.last_warning: bool = False
         self.last_warning_reasons: list[str] = []
         self.last_warning_crossings: list[str] = []
+        self.last_warning_crossing_details: list[dict[str, Any]] = []
+        self.current_warning_lifecycle_events: list[dict[str, Any]] = []
 
     def begin_forward(
         self,
@@ -247,48 +255,182 @@ class ForensicObserver:
         self.last_warning = False
         self.last_warning_reasons = []
         self.last_warning_crossings = []
+        self.last_warning_crossing_details = []
+        self.current_warning_lifecycle_events = []
 
     def _scope_key(self, scope: str, name: str) -> str:
         return f"{scope}/{name}"
+
+    def set_warning_event_sink(self, sink: Any | None) -> None:
+        """Send lifecycle events directly to a bounded JSONL artifact."""
+
+        self.warning_event_sink = sink
+
+    def _warning_context(self) -> dict[str, Any]:
+        current = self.current or {}
+        return {
+            "epoch": int(current.get("epoch", -1)),
+            "batch": int(current.get("batch_index", -1)),
+            "batch_index": int(current.get("batch_index", -1)),
+            "global_step": int(current.get("global_step", -1)),
+            "split": str(current.get("split", "unknown")),
+        }
+
+    def _emit_warning_lifecycle_event(
+        self,
+        event_type: str,
+        condition_key: WarningConditionKey,
+        *,
+        previous_state: bool | None,
+        current_state: bool,
+        episode_id: int | None,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        split, scope, metric, threshold = condition_key
+        event = {
+            "event_type": event_type,
+            **self._warning_context(),
+            "scope": scope,
+            "metric": metric,
+            "threshold": float(threshold),
+            "previous_state": previous_state,
+            "current_state": bool(current_state),
+            "episode_id": episode_id,
+            **extra,
+        }
+        # The split is part of the stable key and is repeated explicitly in
+        # the event for simple downstream auditing.
+        event["split"] = split
+        self.warning_lifecycle_events.append(event)
+        self.current_warning_lifecycle_events.append(event)
+        if self.warning_event_sink is not None:
+            self.warning_event_sink(event)
+        return event
+
+    def _observe_warning_condition(
+        self,
+        *,
+        scope: str,
+        metric: str,
+        threshold: float,
+        active: bool,
+        reason: str,
+    ) -> None:
+        condition_key: WarningConditionKey = (
+            str((self.current or {}).get("split", "unknown")),
+            str(scope),
+            str(metric),
+            float(threshold),
+        )
+        key_exists = condition_key in self.warning_active
+        was_active = self.warning_active.get(condition_key, False)
+        episode_id = self.warning_episode_ids.get(condition_key)
+
+        if not key_exists:
+            self._emit_warning_lifecycle_event(
+                "warning_state_created",
+                condition_key,
+                previous_state=None,
+                current_state=active,
+                episode_id=None,
+            )
+
+        if active and not was_active:
+            episode_id = self.warning_episode_ids.get(condition_key, 0) + 1
+            self.warning_episode_ids[condition_key] = episode_id
+            self._emit_warning_lifecycle_event(
+                "warning_episode_started",
+                condition_key,
+                previous_state=False,
+                current_state=True,
+                episode_id=episode_id,
+                reason=reason,
+            )
+            self.last_warning_crossings.append(reason)
+            self.last_warning_crossing_details.append(
+                {
+                    "split": condition_key[0],
+                    "scope": condition_key[1],
+                    "metric": condition_key[2],
+                    "threshold": condition_key[3],
+                    "episode_id": episode_id,
+                    "reason": reason,
+                }
+            )
+
+        self.warning_active[condition_key] = bool(active)
+        if active:
+            self._emit_warning_lifecycle_event(
+                "warning_condition_true",
+                condition_key,
+                previous_state=was_active if key_exists else False,
+                current_state=True,
+                episode_id=episode_id,
+                reason=reason,
+            )
+        elif was_active:
+            self._emit_warning_lifecycle_event(
+                "warning_state_reset",
+                condition_key,
+                previous_state=True,
+                current_state=False,
+                episode_id=episode_id,
+            )
 
     def _warning_check(self, scope: str, name: str, stats: dict[str, Any]) -> None:
         absolute_maximum = stats.get("abs_max")
         if absolute_maximum is not None:
             for threshold in self.ABS_THRESHOLDS:
-                condition_key = (
-                    str(self.current.get("split", "unknown")),
-                    scope,
-                    f"{name}:abs_max",
-                    float(threshold),
-                )
+                metric = f"{name}:abs_max"
                 active = absolute_maximum > threshold
-                was_active = self.warning_active.get(condition_key, False)
-                self.warning_active[condition_key] = active
+                reason = f"{scope}/{name}:abs_max>{threshold:g}"
+                self._observe_warning_condition(
+                    scope=scope,
+                    metric=metric,
+                    threshold=float(threshold),
+                    active=active,
+                    reason=reason,
+                )
                 if active:
-                    reason = f"{scope}/{name}:abs_max>{threshold:g}"
                     if reason not in self.last_warning_reasons:
                         self.last_warning_reasons.append(reason)
-                    if not was_active and reason not in self.last_warning_crossings:
-                        self.last_warning_crossings.append(reason)
         if name == "max_log_decay" and stats.get("min") is not None:
             negative_minimum = -float(stats["min"])
             for threshold in self.LOG_DECAY_THRESHOLDS:
-                condition_key = (
-                    str(self.current.get("split", "unknown")),
-                    scope,
-                    f"{name}:-min",
-                    float(threshold),
-                )
+                metric = f"{name}:-min"
                 active = negative_minimum > threshold
-                was_active = self.warning_active.get(condition_key, False)
-                self.warning_active[condition_key] = active
+                reason = f"{scope}/{name}:-min>{threshold:g}"
+                self._observe_warning_condition(
+                    scope=scope,
+                    metric=metric,
+                    threshold=float(threshold),
+                    active=active,
+                    reason=reason,
+                )
                 if active:
-                    reason = f"{scope}/{name}:-min>{threshold:g}"
                     if reason not in self.last_warning_reasons:
                         self.last_warning_reasons.append(reason)
-                    if not was_active and reason not in self.last_warning_crossings:
-                        self.last_warning_crossings.append(reason)
         self.last_warning = bool(self.last_warning_crossings)
+
+    def record_warning_checkpoint_saved(self, checkpoint_path: Path | str) -> None:
+        """Record one lifecycle event for each crossing captured in a file."""
+
+        for crossing in self.last_warning_crossing_details:
+            condition_key: WarningConditionKey = (
+                str(crossing["split"]),
+                str(crossing["scope"]),
+                str(crossing["metric"]),
+                float(crossing["threshold"]),
+            )
+            self._emit_warning_lifecycle_event(
+                "warning_checkpoint_saved",
+                condition_key,
+                previous_state=True,
+                current_state=True,
+                episode_id=int(crossing["episode_id"]),
+                reason=str(crossing["reason"]),
+                checkpoint_path=str(checkpoint_path),
+            )
 
     def record(
         self,
@@ -462,6 +604,7 @@ class ForensicObserver:
             "warnings": list(self.last_warning_reasons),
             "warning_crossings": list(self.last_warning_crossings),
             "warning_crossed": self.last_warning,
+            "warning_lifecycle_event_count": len(self.current_warning_lifecycle_events),
             "vil": compact_blocks,
         }
         detail = None
@@ -471,6 +614,7 @@ class ForensicObserver:
                 "event_type": "warning",
                 "warnings": list(self.last_warning_reasons),
                 "warning_crossings": list(self.last_warning_crossings),
+                "warning_lifecycle_events": copy.deepcopy(self.current_warning_lifecycle_events),
                 "stages": copy.deepcopy(self.current_details),
             }
         self.last_compact = compact
@@ -489,6 +633,7 @@ class ForensicObserver:
             "failure_stats": failure.stats,
             "warnings": list(self.last_warning_reasons),
             "warning_crossings": list(self.last_warning_crossings),
+            "warning_lifecycle_events": copy.deepcopy(self.current_warning_lifecycle_events),
             "stages": copy.deepcopy(self.current_details),
         }
 
@@ -496,6 +641,7 @@ class ForensicObserver:
         self.current = None
         self.current_details = {}
         self.block_values = {}
+        self.current_warning_lifecycle_events = []
 
 
 _ACTIVE_OBSERVER: ForensicObserver | None = None
@@ -836,12 +982,19 @@ def run_forensic_self_tests() -> dict[str, Any]:
 
     observer = ForensicObserver()
 
-    def observe_value(value: float, name: str = "test_metric") -> tuple[bool, bool, dict[str, Any]]:
+    def observe_value(
+        value: float,
+        name: str = "test_metric",
+        *,
+        split: str = "self_test",
+        epoch: int = 0,
+        batch_index: int = 0,
+    ) -> tuple[bool, bool, dict[str, Any]]:
         observer.begin_forward(
-            split="self_test",
-            epoch=0,
-            batch_index=0,
-            global_step=0,
+            split=split,
+            epoch=epoch,
+            batch_index=batch_index,
+            global_step=epoch * 100 + batch_index,
             sample_ids=["self_test"],
         )
         observer.record("vil/forward_block_0", name, torch.tensor([value]))
@@ -878,6 +1031,119 @@ def run_forensic_self_tests() -> dict[str, Any]:
     log_sustained = observe_log_decay(-55.0)
     log_reset = observe_log_decay(-49.0)
     log_recross = observe_log_decay(-51.0)
+
+    def simulate_stream(
+        values: list[tuple[str, int, int, float]],
+        *,
+        name: str = "test_metric",
+    ) -> tuple[int, ForensicObserver]:
+        stream_observer = ForensicObserver()
+        checkpoint_count = 0
+        for split, epoch, batch_index, value in values:
+            stream_observer.begin_forward(
+                split=split,
+                epoch=epoch,
+                batch_index=batch_index,
+                global_step=epoch * 100 + batch_index,
+                sample_ids=["self_test"],
+            )
+            stream_observer.record(
+                "vil/forward_block_0",
+                name,
+                torch.tensor([value]),
+            )
+            _, _, crossed = stream_observer.finish_forward()
+            if crossed:
+                checkpoint_count += 1
+                stream_observer.record_warning_checkpoint_saved(
+                    f"synthetic_warning_{checkpoint_count}.pt"
+                )
+            stream_observer.clear()
+        return checkpoint_count, stream_observer
+
+    continuous_values = [
+        ("train", epoch, batch_index, 101.0)
+        for epoch in range(1, 11)
+        for batch_index in range(10)
+    ]
+    continuous_checkpoint_count, _ = simulate_stream(continuous_values)
+    epoch_boundary_values = [
+        ("train", 1, batch_index, 101.0) for batch_index in range(10)
+    ] + [
+        ("train", 2, batch_index, 101.0) for batch_index in range(10)
+    ]
+    epoch_boundary_checkpoint_count, _ = simulate_stream(epoch_boundary_values)
+    split_values = [
+        ("train", 1, batch_index, 101.0) for batch_index in range(10)
+    ] + [
+        ("validation", 1, batch_index, 101.0) for batch_index in range(10)
+    ] + [
+        ("train", 2, batch_index, 101.0) for batch_index in range(10)
+    ] + [
+        ("validation", 2, batch_index, 101.0) for batch_index in range(10)
+    ]
+    split_checkpoint_count, split_observer = simulate_stream(split_values)
+    recross_values = [
+        ("train", 1, 0, 50.0),
+        ("train", 1, 1, 101.0),
+        ("train", 1, 2, 110.0),
+        ("train", 1, 3, 50.0),
+        ("train", 1, 4, 101.0),
+    ]
+    recross_checkpoint_count, recross_observer = simulate_stream(recross_values)
+    directional_observer = ForensicObserver()
+    directional_checkpoint_count = 0
+    for batch_index in range(10):
+        directional_observer.begin_forward(
+            split="train",
+            epoch=1,
+            batch_index=batch_index,
+            global_step=batch_index,
+            sample_ids=["self_test"],
+        )
+        directional_observer.record(
+            "vil/forward_block_0",
+            "test_metric",
+            torch.tensor([101.0]),
+        )
+        directional_observer.record(
+            "vil/reverse_block_0",
+            "test_metric",
+            torch.tensor([101.0]),
+        )
+        _, _, crossed = directional_observer.finish_forward()
+        if crossed:
+            directional_checkpoint_count += 1
+        directional_observer.clear()
+    lifecycle_types = {
+        event["event_type"] for event in recross_observer.warning_lifecycle_events
+    }
+    lifecycle_fields_present = all(
+        {
+            "epoch",
+            "batch",
+            "split",
+            "scope",
+            "metric",
+            "threshold",
+            "previous_state",
+            "current_state",
+            "episode_id",
+        }.issubset(event)
+        for event in recross_observer.warning_lifecycle_events
+    )
+    train_condition_key = (
+        "train",
+        "vil/forward_block_0",
+        "test_metric:abs_max",
+        100.0,
+    )
+    validation_condition_key = (
+        "validation",
+        "vil/forward_block_0",
+        "test_metric:abs_max",
+        100.0,
+    )
 
     nonfinite_observer = ForensicObserver()
     nonfinite_observer.begin_forward(
@@ -958,6 +1224,31 @@ def run_forensic_self_tests() -> dict[str, Any]:
         "below_threshold_resets_episode": not reset_crossed and not reset_detail,
         "later_recross_one_event": recrossed and recross_detail,
         "log_decay_crossing": log_first and not log_sustained and not log_reset and log_recross,
+        "100_consecutive_above_one_checkpoint": continuous_checkpoint_count == 1,
+        "epoch_boundary_continuity_one_checkpoint": epoch_boundary_checkpoint_count == 1,
+        "train_validation_independent_episodes": (
+            split_checkpoint_count == 2
+            and split_observer.warning_episode_ids.get(train_condition_key) == 1
+            and split_observer.warning_episode_ids.get(validation_condition_key) == 1
+        ),
+        "false_true_true_false_true_two_checkpoints": recross_checkpoint_count == 2,
+        "forward_reverse_independent_episodes": (
+            directional_checkpoint_count == 1
+            and directional_observer.warning_episode_ids.get(
+                ("train", "vil/forward_block_0", "test_metric:abs_max", 100.0)
+            ) == 1
+            and directional_observer.warning_episode_ids.get(
+                ("train", "vil/reverse_block_0", "test_metric:abs_max", 100.0)
+            ) == 1
+        ),
+        "lifecycle_events_present": {
+            "warning_state_created",
+            "warning_episode_started",
+            "warning_condition_true",
+            "warning_state_reset",
+            "warning_checkpoint_saved",
+        }.issubset(lifecycle_types),
+        "lifecycle_event_fields_present": lifecycle_fields_present,
         "nonfinite_detection": nonfinite_detected,
         "failure_checkpoint_behavior": failure_checkpoint_behavior,
         "compact_logging_present": "vil" in compact and "warning_crossed" in compact,
@@ -1273,7 +1564,9 @@ def train_forensic(
     for directory in (output_dir / "checkpoints", output_dir / "diagnostics"):
         directory.mkdir(parents=True, exist_ok=False)
     events_path = output_dir / "forensic_events.jsonl"
+    warning_state_events_path = output_dir / "warning_state_events.jsonl"
     events_path.touch()
+    warning_state_events_path.touch()
 
     write_json(output_dir / "config_snapshot.json", config)
     model = build_model(config).to(device)
@@ -1313,6 +1606,7 @@ def train_forensic(
             "max_validation_batches": max_validation_batches,
             "anomaly_detection": anomaly_detection,
             "regular_checkpoint_interval_epochs": checkpoint_every,
+            "warning_state_events_path": str(warning_state_events_path),
             "checkpoint_policy": (
                 "one full regular checkpoint every checkpoint interval; one overwritten "
                 "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
@@ -1360,6 +1654,9 @@ def train_forensic(
         train_generator.set_state(train_generator_before_sanity)
 
     observer = ForensicObserver()
+    observer.set_warning_event_sink(
+        lambda event: append_jsonl(warning_state_events_path, event)
+    )
     instrumentation = A1Instrumentation(model, observer)
     instrumentation.install()
     instrumentation.activate()
@@ -1436,8 +1733,13 @@ def train_forensic(
                             stats=parameters_before["stats"],
                         )
                     if warning:
+                        warning_checkpoint_path = (
+                            output_dir
+                            / "checkpoints"
+                            / f"warning_e{epoch:03d}_b{batch_index:04d}_s{global_step:06d}.pt"
+                        )
                         save_training_state(
-                            output_dir / "checkpoints" / f"warning_e{epoch:03d}_b{batch_index:04d}_s{global_step:06d}.pt",
+                            warning_checkpoint_path,
                             model=model,
                             optimizer=optimizer,
                             scheduler=scheduler,
@@ -1449,6 +1751,7 @@ def train_forensic(
                             validation_generator=validation_generator,
                             label="warning_before_optimizer_step",
                         )
+                        observer.record_warning_checkpoint_saved(warning_checkpoint_path)
                     optimizer.step()
                     parameters_after = parameter_finiteness(model)
                     if parameters_after is not None:
@@ -1573,6 +1876,7 @@ def train_forensic(
                     "global_step": global_step,
                     "sanity_check": sanity_results,
                     "regular_checkpoint_interval_epochs": checkpoint_every,
+                    "warning_state_events_path": str(warning_state_events_path),
                     "checkpoint_policy": (
                         "one full regular checkpoint every checkpoint interval; one overwritten "
                         "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
@@ -1609,6 +1913,7 @@ def train_forensic(
                 "global_step": global_step,
                 "sanity_check": sanity_results,
                 "regular_checkpoint_interval_epochs": checkpoint_every,
+                "warning_state_events_path": str(warning_state_events_path),
                 "checkpoint_policy": (
                     "one full regular checkpoint every checkpoint interval; one overwritten "
                     "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
@@ -1632,6 +1937,7 @@ def train_forensic(
                 "global_step": global_step,
                 "warning_count": sum(1 for line in events_path.read_text(encoding="utf-8").splitlines() if line),
                 "regular_checkpoint_interval_epochs": checkpoint_every,
+                "warning_state_events_path": str(warning_state_events_path),
                 "checkpoint_policy": (
                     "one full regular checkpoint every checkpoint interval; one overwritten "
                     "best.pt; one warning checkpoint per threshold episode; failure checkpoints only on failure"
