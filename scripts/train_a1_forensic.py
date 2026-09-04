@@ -52,6 +52,7 @@ from src.data.kvasir_seg import KvasirSegDataset
 from src.losses.segmentation import BCESoftDiceLoss
 from src.metrics.segmentation import METRIC_NAMES, batch_metric_values
 from src.models.factory import build_model
+from src.models import vil_bottleneck_a1n as vil_a1n_module
 from src.models import vil_bottleneck_unet as vil_module
 from src.models.vil_bottleneck_unet import ViLMLSTMBlock
 from src.training.config import choose_device, load_config, project_path
@@ -796,6 +797,8 @@ class A1Instrumentation:
         self.observer = observer
         self.handles: list[Any] = []
         self.original_parallel = vil_module._parallel_stabilized_mlstm
+        self.original_a1n_callback = vil_a1n_module.get_diagnostic_callback()
+        self.a1n_callback_active = False
         self.installed = False
 
     def _output_hook(self, scope: str, stage: str):
@@ -803,6 +806,26 @@ class A1Instrumentation:
             self.observer.record(scope, stage, output)
 
         return hook
+
+    def _observe_a1n_mlstm(
+        self,
+        _cell: nn.Module,
+        diagnostics: dict[str, torch.Tensor],
+    ) -> None:
+        if self.observer.current is None:
+            return
+        scope = f"vil/{self.observer._active_block_label()}"
+        for name in (
+            "cumulative_log_decay",
+            "combination",
+            "normalized_combination",
+            "max_log_decay",
+            "log_normalizer",
+            "inverse_normalizer",
+        ):
+            tensor = diagnostics.get(name)
+            if tensor is not None:
+                self.observer.record(scope, name, tensor)
 
     def install(self) -> None:
         global _ACTIVE_OBSERVER
@@ -960,14 +983,24 @@ class A1Instrumentation:
     def activate(self) -> None:
         global _ACTIVE_OBSERVER
         _ACTIVE_OBSERVER = self.observer
+        if not self.a1n_callback_active:
+            self.original_a1n_callback = vil_a1n_module.get_diagnostic_callback()
+            vil_a1n_module.set_diagnostic_callback(self._observe_a1n_mlstm)
+            self.a1n_callback_active = True
 
     def deactivate(self) -> None:
         global _ACTIVE_OBSERVER
         _ACTIVE_OBSERVER = None
+        if self.a1n_callback_active:
+            vil_a1n_module.set_diagnostic_callback(self.original_a1n_callback)
+            self.a1n_callback_active = False
 
     def close(self) -> None:
         global _ACTIVE_OBSERVER
         _ACTIVE_OBSERVER = None
+        if self.a1n_callback_active:
+            vil_a1n_module.set_diagnostic_callback(self.original_a1n_callback)
+            self.a1n_callback_active = False
         for handle in self.handles:
             handle.remove()
         self.handles = []
@@ -1005,9 +1038,9 @@ def build_loader(
 
 def validate_forensic_config(config: dict[str, Any]) -> None:
     model_name = str(config["model"]["name"]).lower()
-    if model_name != "unet_vil_bottleneck_a1":
+    if model_name not in {"unet_vil_bottleneck_a1", "unet_vil_bottleneck_a1n"}:
         raise ValueError(
-            "train_a1_forensic.py requires model.name='unet_vil_bottleneck_a1', "
+            "train_a1_forensic.py requires an A1 or A1-N model name, "
             f"got {model_name!r}"
         )
     if int(config["seed"]) != 42:
@@ -2020,6 +2053,11 @@ def train_forensic(
     if checkpoint_every <= 0:
         raise ValueError("checkpoint_every must be positive")
     output_dir.mkdir(parents=True, exist_ok=False)
+    experiment_type = (
+        "forensic_a1n_log_domain_normalization"
+        if str(config["model"]["name"]).lower() == "unet_vil_bottleneck_a1n"
+        else "forensic_a1_numerical_investigation"
+    )
     for directory in (output_dir / "checkpoints", output_dir / "diagnostics"):
         directory.mkdir(parents=True, exist_ok=False)
     events_path = output_dir / "forensic_events.jsonl"
@@ -2052,7 +2090,7 @@ def train_forensic(
         output_dir / "experiment_metadata.json",
         {
             "status": "running",
-            "experiment_type": "forensic_a1_numerical_investigation",
+            "experiment_type": experiment_type,
             "historical_epoch27_not_exactly_replayed": True,
             "fresh_initialization": True,
             "config_path": config["_config_path"],
@@ -2410,7 +2448,7 @@ def train_forensic(
                 output_dir / "experiment_metadata.json",
                 {
                     "status": "running",
-                    "experiment_type": "forensic_a1_numerical_investigation",
+                    "experiment_type": experiment_type,
                     "historical_epoch27_not_exactly_replayed": True,
                     "fresh_initialization": True,
                     "config_path": config["_config_path"],
@@ -2451,7 +2489,7 @@ def train_forensic(
             output_dir / "experiment_metadata.json",
             {
                 "status": status,
-                "experiment_type": "forensic_a1_numerical_investigation",
+                "experiment_type": experiment_type,
                 "historical_epoch27_not_exactly_replayed": True,
                 "fresh_initialization": True,
                 "config_path": config["_config_path"],

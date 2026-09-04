@@ -1,0 +1,22 @@
+{
+  "extends": "configs/vil_bottleneck_a1.json",
+  "name": "architecture_a1n_log_domain_normalization_v1",
+  "model": {
+    "name": "unet_vil_bottleneck_a1n",
+    "vil_bottleneck_a1n": {
+      "depth": 1,
+      "expansion": 2,
+      "qkv_block_size": 4,
+      "conv_kernel_size": 4,
+      "proj_bias": false,
+      "conv_bias": true,
+      "norm_eps": 1e-5
+    }
+  },
+  "training": {
+    "checkpoint_dir": "experiments/runs/architecture_a1n_log_domain_normalization_seed42"
+  },
+  "sanity": {
+    "checkpoint_path": "experiments/sanity/architecture_a1n_log_domain_normalization_seed42.pt"
+  }
+}

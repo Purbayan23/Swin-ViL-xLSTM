@@ -6,6 +6,7 @@ from typing import Any
 
 from .pure_unet import PureUNet
 from .vil_bottleneck_a1 import A1AlternatingBottleneckUNet
+from .vil_bottleneck_a1n import A1NAlternatingBottleneckUNet
 from .vil_bottleneck_unet import ViLBottleneckUNet
 
 
@@ -24,6 +25,10 @@ def build_model(config: dict[str, Any]):
     if model_name == "unet_vil_bottleneck_a1":
         vil_config = model_config.pop("vil_bottleneck_a1", {})
         return A1AlternatingBottleneckUNet(**model_config, vil_bottleneck=vil_config)
+    if model_name == "unet_vil_bottleneck_a1n":
+        vil_config = model_config.pop("vil_bottleneck_a1n", {})
+        model_config.pop("vil_bottleneck_a1", None)
+        return A1NAlternatingBottleneckUNet(**model_config, vil_bottleneck=vil_config)
     raise ValueError(f"unknown model.name: {model_name!r}")
 
 
